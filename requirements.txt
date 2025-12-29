@@ -22,6 +22,7 @@ rank-bm25>=0.2.2
 # PDF Processing
 pypdf>=3.17.0
 # Alternative: PyPDF2>=3.0.0
+cryptography>=3.1  # Required for encrypted PDFs
 
 # Japanese Text Processing
 sudachipy>=0.6.0

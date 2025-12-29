@@ -245,3 +245,56 @@ def hybrid_search(
         results.append(result)
 
     return results
+
+
+def fallback_keyword_search(
+    query: str,
+    chunks_metadata: Dict[str, Dict[str, Any]],
+    k: int = 4
+) -> List[Dict[str, Any]]:
+    """インデックス結果が空の場合のキーワード簡易検索"""
+    if not chunks_metadata:
+        return []
+
+    tokens = [t.strip() for t in tokenize_japanese(query) if t.strip()]
+    tokens = [t for t in tokens if len(t) >= 2]
+    if not tokens:
+        return []
+
+    scored = []
+    for chunk_id, meta in chunks_metadata.items():
+        text = meta.get('text', '')
+        if not text:
+            continue
+        match_count = 0
+        for token in tokens:
+            if token in text:
+                match_count += 1
+        if match_count <= 0:
+            continue
+        scored.append((chunk_id, meta, match_count))
+
+    if not scored:
+        return []
+
+    max_score = max(score for _, _, score in scored)
+    results = []
+    for chunk_id, meta, score in sorted(scored, key=lambda x: x[2], reverse=True)[:k]:
+        normalized = score / max_score if max_score else 0.0
+        result = {
+            'chunk_id': chunk_id,
+            'text': meta.get('text', ''),
+            'score': min(1.0, max(0.1, normalized)),
+            'bm25_score': min(1.0, max(0.1, normalized)),
+            'vector_score': 0.0,
+            'file': meta.get('file', ''),
+            'heading': meta.get('heading', ''),
+            'updated_at': meta.get('updated_at', '')
+        }
+        if 'page_start' in meta:
+            result['page_start'] = meta['page_start']
+        if 'page_end' in meta:
+            result['page_end'] = meta['page_end']
+        results.append(result)
+
+    return results

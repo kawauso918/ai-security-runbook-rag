@@ -11,10 +11,15 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from constants import (
     DEFAULT_DATA_FOLDER, DEFAULT_K, DEFAULT_BM25_WEIGHT, DEFAULT_VECTOR_WEIGHT,
-    DEFAULT_LLM_MODEL, MAX_CONVERSATION_HISTORY, DEFAULT_JUDGE_MODEL
+    DEFAULT_LLM_MODEL, MAX_CONVERSATION_HISTORY, DEFAULT_JUDGE_MODEL,
+    DEFAULT_EXTERNAL_SEARCH_ENABLED, DEFAULT_EXTERNAL_SEARCH_MAX_RESULTS,
+    DEFAULT_EXTERNAL_SEARCH_TIMEOUT_SEC
 )
 from initialize import initialize_system
-from retriever import search_with_scores, update_retriever_weights, update_retriever_k
+from retriever import (
+    search_with_scores, update_retriever_weights, update_retriever_k,
+    fallback_keyword_search
+)
 from guardrails import apply_guardrails
 from logger import log_query
 from components import (
@@ -30,6 +35,7 @@ from judge import (
     load_eval_dataset, run_evaluation_suite, save_evaluation_results,
     format_evaluation_summary
 )
+from utils import external_search_duckduckgo
 
 # 環境変数読み込み
 load_dotenv()
@@ -65,6 +71,15 @@ if 'bm25_weight' not in st.session_state:
 
 if 'vector_weight' not in st.session_state:
     st.session_state.vector_weight = DEFAULT_VECTOR_WEIGHT
+
+if 'external_search_enabled' not in st.session_state:
+    st.session_state.external_search_enabled = DEFAULT_EXTERNAL_SEARCH_ENABLED
+
+if 'external_search_max_results' not in st.session_state:
+    st.session_state.external_search_max_results = DEFAULT_EXTERNAL_SEARCH_MAX_RESULTS
+
+if 'external_search_timeout_sec' not in st.session_state:
+    st.session_state.external_search_timeout_sec = DEFAULT_EXTERNAL_SEARCH_TIMEOUT_SEC
 
 if 'index_last_built' not in st.session_state:
     st.session_state.index_last_built = None
@@ -111,6 +126,18 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
         )
     except Exception as e:
         raise APIError(f"検索処理エラー: {e}")
+
+    # 検索結果が空の場合は簡易キーワード検索で補完
+    if not search_results:
+        fallback_results = fallback_keyword_search(
+            query=user_query,
+            chunks_metadata=session_state.get('chunks_metadata', {}),
+            k=session_state['k']
+        )
+        if fallback_results:
+            for result in fallback_results:
+                result['source_type'] = 'manual_fallback'
+            search_results = fallback_results
     
     # ガードレール適用（検索後、LLM呼び出し前）
     guardrail_result = apply_guardrails(
@@ -118,11 +145,46 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
         search_results=search_results,
         answer=None  # まだ回答は生成していない
     )
-    
+
+    # 根拠不足の場合は外部検索で補完
+    if guardrail_result['flags'].get('insufficient_evidence'):
+        if session_state.get('external_search_enabled'):
+            external_raw = external_search_duckduckgo(
+                user_query,
+                max_results=session_state.get('external_search_max_results', 5),
+                timeout_sec=session_state.get('external_search_timeout_sec', 8)
+            )
+            if external_raw:
+                external_results = []
+                for i, item in enumerate(external_raw):
+                    score = 1.0 - (i * 0.1)
+                    external_results.append({
+                        'chunk_id': f"external_{i}",
+                        'text': item.get('snippet', ''),
+                        'score': max(0.0, score),
+                        'bm25_score': max(0.0, score),
+                        'vector_score': 0.0,
+                        'file': item.get('url', ''),
+                        'heading': item.get('title', ''),
+                        'updated_at': '',
+                        'source_type': 'external'
+                    })
+                search_results = external_results
+                guardrail_result = apply_guardrails(
+                    query=user_query,
+                    search_results=search_results,
+                    answer=None
+                )
+
     # 根拠不足または曖昧質問の場合は、ここで終了
     if not guardrail_result['should_respond']:
+        if guardrail_result['flags'].get('insufficient_evidence') and session_state.get('external_search_enabled'):
+            guardrail_result['answer'] = (
+                "該当する手順が見つかりませんでした。"
+                "外部検索でも該当情報が見つかりませんでした。"
+            )
         processing_time = time.time() - start_time
-        
+
         return {
             'answer': guardrail_result['answer'],
             'citations': guardrail_result['citations'],
@@ -135,10 +197,20 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
         }
     
     # LLMプロンプト作成
-    context_text = "\n\n".join([
-        f"【{i+1}】{result['text']}\n（出典: {result['file']} > {result['heading']}）"
-        for i, result in enumerate(search_results[:session_state['k']])
-    ])
+    context_blocks = []
+    for i, result in enumerate(search_results[:session_state['k']]):
+        source_type = result.get('source_type', 'manual')
+        if source_type == 'external':
+            title = result.get('heading', '').strip() or "外部情報"
+            source = result.get('file', '').strip()
+            context_blocks.append(
+                f"【外部{i+1}】{title}\n{result.get('text', '')}\n（出典: {source}）"
+            )
+        else:
+            context_blocks.append(
+                f"【{i+1}】{result['text']}\n（出典: {result['file']} > {result['heading']}）"
+            )
+    context_text = "\n\n".join(context_blocks)
     
     # 会話履歴を取得（最新5往復）
     conversation_history = session_state['messages'][-MAX_CONVERSATION_HISTORY * 2:]
@@ -154,10 +226,11 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
 提供された手順書の内容に基づいて、正確で分かりやすい回答をしてください。
 
 重要なルール:
-- 手順書の内容のみを根拠として回答してください
-- 推測や憶測は避け、手順書に記載されている情報のみを使用してください
-- 回答の最後に、参考にした手順書のセクションを明記してください
-- 分からない場合は「該当する手順が見つかりませんでした」と回答してください"""),
+- 手順書の内容を最優先の根拠として回答してください
+- 推測や憶測は避け、記載されている情報のみを使用してください
+- 手順書に必要な情報がなく、外部情報が提供されている場合はそれを補完として使用して構いません
+- 回答の最後に、参考にした情報源（手順書のセクション名または外部URL）を箇条書きで明記してください
+- どちらにも該当情報がない場合は、その旨を簡潔に伝えてください"""),
         ("human", """以下の手順書の内容を参考に、質問に回答してください。
 
 【手順書の内容】
@@ -289,6 +362,27 @@ def render_sidebar():
 
         st.divider()
 
+        # 外部検索設定
+        st.subheader("🌐 外部検索")
+        external_search_enabled = st.checkbox(
+            "外部検索を許可（DuckDuckGo）",
+            value=st.session_state.external_search_enabled,
+            help="手順書に該当情報がない場合に外部検索で補完します"
+        )
+        st.session_state.external_search_enabled = external_search_enabled
+
+        external_search_max_results = st.slider(
+            "外部検索の最大件数",
+            min_value=1,
+            max_value=10,
+            value=st.session_state.external_search_max_results,
+            step=1,
+            help="外部検索結果として取得する件数"
+        )
+        st.session_state.external_search_max_results = int(external_search_max_results)
+
+        st.divider()
+
         # ファイルアップロードセクション
         st.subheader("📤 手順書アップロード")
         uploaded_files = st.file_uploader(
@@ -382,6 +476,9 @@ def render_sidebar():
                         rebuild_status.text("✅ 完了")
 
                         st.success(f"インデックス構築完了: {result['index_count']}件のチャンクをインデックス化しました")
+
+                        if result.get('errors'):
+                            display_error_summary(result['errors'])
 
                         time.sleep(1)
                         rebuild_progress.empty()
@@ -684,4 +781,3 @@ if __name__ == "__main__":
         st.stop()
     
     main()
-

@@ -62,6 +62,10 @@ def render_chat_message(role: str, content: str, citations: List[Dict] = None) -
                         
                         st.markdown(f"**{i}. {file_name}**")
 
+                        source_type = citation.get('source_type')
+                        if source_type == 'external':
+                            st.caption("外部情報")
+
                         # ページ範囲を取得・生成
                         page_start = citation.get('page_start')
                         page_end = citation.get('page_end')
@@ -84,5 +88,4 @@ def render_chat_message(role: str, content: str, citations: List[Dict] = None) -
                         st.text(excerpt)
                         if i < len(citations):
                             st.divider()
-
 

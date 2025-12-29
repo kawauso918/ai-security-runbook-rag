@@ -65,7 +65,7 @@ def detect_ambiguous_query(query: str) -> bool:
 
 def get_insufficient_evidence_response() -> str:
     """根拠不足時の応答テンプレート"""
-    return "該当する手順が見つかりませんでした。"
+    return "該当する手順が見つかりませんでした。外部検索を許可して再試行するか、質問内容を具体化してください。"
 
 
 def get_ambiguous_query_response() -> str:

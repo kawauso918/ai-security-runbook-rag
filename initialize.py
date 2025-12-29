@@ -7,6 +7,7 @@ from pathlib import Path
 
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
+import chromadb
 
 from constants import (
     DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP,
@@ -170,6 +171,29 @@ def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
     return chunks
 
 
+def _ensure_chroma_db_path(db_path: str) -> None:
+    """ChromaDBの保存先を用意（削除せずに再利用）"""
+    path = Path(db_path)
+    parent = path.parent
+
+    if not parent.exists():
+        raise PermissionError(f"ChromaDBの保存先の親フォルダが存在しません: {parent}")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise PermissionError(f"ChromaDBの保存先に書き込み権限がありません: {parent}")
+
+    if path.exists():
+        if not path.is_dir():
+            raise PermissionError(f"ChromaDBの保存先がディレクトリではありません: {path}")
+        if not os.access(path, os.W_OK | os.X_OK):
+            raise PermissionError(f"ChromaDBの保存先に書き込み権限がありません: {path}")
+        return
+
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise PermissionError(f"ChromaDBの保存先を作成できません: {path} ({e})")
+
+
 def build_indexes(
     chunks: List[Dict],
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
@@ -224,12 +248,24 @@ def build_indexes(
 
     embeddings = OpenAIEmbeddings(model=embedding_model)
 
+    # ChromaDBの保存先を用意（削除せず再利用）
+    _ensure_chroma_db_path(CHROMA_DB_PATH)
+
+    # ChromaDB 0.4.0+ 用: PersistentClientを使用
+    chroma_client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+
+    # 既存のコレクションを削除（インデックス再構築時に古いデータを削除）
+    try:
+        chroma_client.delete_collection("security_runbooks")
+    except Exception:
+        pass
+
     # ChromaDBに保存（永続化）
     vectorstore = Chroma.from_texts(
         texts=texts,
         metadatas=metadatas,
         embedding=embeddings,
-        persist_directory=CHROMA_DB_PATH,
+        client=chroma_client,
         collection_name="security_runbooks"
     )
 
@@ -307,4 +343,3 @@ def initialize_system(
         'index_last_built': datetime.now().isoformat(),
         'errors': errors
     }
-

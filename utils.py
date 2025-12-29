@@ -2,6 +2,9 @@
 
 import re
 import os
+import json
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 from collections import Counter
@@ -206,6 +209,69 @@ def tokenize_japanese(text: str, preserve_special_tokens: bool = True) -> List[s
             return list(text)
 
 
+def external_search_duckduckgo(
+    query: str,
+    max_results: int = 5,
+    timeout_sec: int = 8
+) -> List[Dict[str, str]]:
+    """DuckDuckGo Instant Answer APIで外部検索（簡易）
+
+    Returns:
+        [{'title': str, 'snippet': str, 'url': str}, ...]
+    """
+    if not query.strip():
+        return []
+
+    params = {
+        "q": query,
+        "format": "json",
+        "no_redirect": "1",
+        "no_html": "1",
+        "skip_disambig": "1"
+    }
+    url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode(params)
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_sec) as response:
+            data = json.load(response)
+    except Exception:
+        return []
+
+    results = []
+
+    abstract_text = data.get("AbstractText")
+    abstract_url = data.get("AbstractURL")
+    heading = data.get("Heading")
+    if abstract_text:
+        results.append({
+            "title": heading or "DuckDuckGo",
+            "snippet": abstract_text,
+            "url": abstract_url or "https://duckduckgo.com/?q=" + urllib.parse.quote(query)
+        })
+
+    related = data.get("RelatedTopics", [])
+    for item in related:
+        if isinstance(item, dict) and "Text" in item and "FirstURL" in item:
+            results.append({
+                "title": item.get("Text", "").split(" - ")[0] or "DuckDuckGo",
+                "snippet": item.get("Text", ""),
+                "url": item.get("FirstURL", "")
+            })
+        elif isinstance(item, dict) and "Topics" in item:
+            for sub in item.get("Topics", []):
+                if "Text" in sub and "FirstURL" in sub:
+                    results.append({
+                        "title": sub.get("Text", "").split(" - ")[0] or "DuckDuckGo",
+                        "snippet": sub.get("Text", ""),
+                        "url": sub.get("FirstURL", "")
+                    })
+
+        if len(results) >= max_results:
+            break
+
+    return results[:max_results]
+
+
 # ==================== PDF処理関数 ====================
 
 def extract_pdf_pages(pdf_path: str) -> List[Tuple[int, str]]:
@@ -227,6 +293,8 @@ def extract_pdf_pages(pdf_path: str) -> List[Tuple[int, str]]:
         pages = []
         for i, page in enumerate(reader.pages, 1):
             text = page.extract_text()
+            if text is None:
+                text = ""
             pages.append((i, text))
         
         return pages
@@ -368,7 +436,7 @@ def pdf_to_sections(pdf_path: str) -> List[Dict]:
     
     # テキストがほぼ取れない場合（画像のみPDFの可能性）
     total_text_length = sum(len(text) for _, text in pages)
-    if total_text_length < 100:
+    if total_text_length == 0:
         raise ValueError("このPDFはテキスト抽出できませんでした（スキャンPDFの可能性）")
     
     # テキスト正規化
@@ -376,6 +444,21 @@ def pdf_to_sections(pdf_path: str) -> List[Dict]:
     for page_no, text in pages:
         normalized_text = normalize_pdf_text(text)
         normalized_pages.append((page_no, normalized_text))
+
+    if total_text_length < 100:
+        # 短いPDFは見出し抽出をせず、ページ単位でセクション化
+        sections = []
+        for page_no, text in normalized_pages:
+            if text.strip():
+                sections.append({
+                    'file_path': pdf_path,
+                    'content': text.strip(),
+                    'heading': f"PAGE {page_no}",
+                    'page_start': page_no,
+                    'page_end': page_no,
+                    'updated_at': datetime.fromtimestamp(os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0).isoformat()
+                })
+        return sections
     
     # 反復行（ヘッダー/フッター）を除外
     cleaned_pages = remove_repeated_lines(normalized_pages)
@@ -471,6 +554,3 @@ def pdf_to_sections(pdf_path: str) -> List[Dict]:
             })
     
     return sections
-
-
-
