@@ -253,7 +253,7 @@ def render_sidebar():
     """サイドバー描画"""
     with st.sidebar:
         st.title("⚙️ 設定")
-        
+
         # データフォルダパス
         data_folder = st.text_input(
             "データフォルダパス",
@@ -261,7 +261,7 @@ def render_sidebar():
             help="手順書ファイル（PDF/Markdown）を格納しているフォルダのパス"
         )
         st.session_state.data_folder = data_folder
-        
+
         # k設定
         k = st.number_input(
             "検索結果数 (k)",
@@ -271,7 +271,7 @@ def render_sidebar():
             help="検索結果として取得するチャンク数"
         )
         st.session_state.k = int(k)
-        
+
         # 重み設定
         st.subheader("検索重み")
         bm25_weight = st.slider(
@@ -284,11 +284,114 @@ def render_sidebar():
         )
         st.session_state.bm25_weight = bm25_weight
         st.session_state.vector_weight = 1.0 - bm25_weight
-        
+
         st.write(f"ベクトル重み: {st.session_state.vector_weight:.1f}")
-        
+
         st.divider()
-        
+
+        # ファイルアップロードセクション
+        st.subheader("📤 手順書アップロード")
+        uploaded_files = st.file_uploader(
+            "PDF/Markdown/テキストファイルをアップロード",
+            type=['pdf', 'md', 'txt'],
+            accept_multiple_files=True,
+            help="複数のファイルを選択できます"
+        )
+
+        if uploaded_files:
+            st.write(f"{len(uploaded_files)}個のファイルを選択中")
+
+            # 自動インデックス再構築オプション
+            auto_rebuild = st.checkbox(
+                "アップロード後に自動的にインデックスを再構築",
+                value=True,
+                help="チェックを外すと、手動でインデックス再構築が必要になります"
+            )
+
+            if st.button("✅ アップロード実行", type="primary"):
+                # dataフォルダが存在しない場合は作成
+                os.makedirs(st.session_state.data_folder, exist_ok=True)
+
+                uploaded_count = 0
+                errors = []
+
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                for idx, uploaded_file in enumerate(uploaded_files):
+                    try:
+                        status_text.text(f"📄 {uploaded_file.name} を保存中...")
+
+                        # ファイルを保存
+                        file_path = os.path.join(st.session_state.data_folder, uploaded_file.name)
+                        with open(file_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+
+                        uploaded_count += 1
+                        progress_bar.progress((idx + 1) / len(uploaded_files))
+
+                    except Exception as e:
+                        errors.append(f"{uploaded_file.name}: {str(e)}")
+
+                status_text.empty()
+                progress_bar.empty()
+
+                # 結果表示
+                if uploaded_count > 0:
+                    st.success(f"✅ {uploaded_count}個のファイルをアップロードしました")
+
+                if errors:
+                    with st.expander("⚠️ エラーが発生したファイル"):
+                        for error in errors:
+                            st.error(error)
+
+                # 自動インデックス再構築
+                if auto_rebuild and uploaded_count > 0:
+                    st.info("インデックスを再構築中...")
+                    try:
+                        rebuild_progress = st.progress(0)
+                        rebuild_status = st.empty()
+
+                        rebuild_status.text("📂 データフォルダを確認中...")
+                        rebuild_progress.progress(20)
+
+                        rebuild_status.text("📄 ドキュメントを読み込み中...")
+                        rebuild_progress.progress(40)
+
+                        result = initialize_system(
+                            st.session_state.data_folder,
+                            bm25_weight=st.session_state.bm25_weight,
+                            vector_weight=st.session_state.vector_weight,
+                            k=st.session_state.k
+                        )
+
+                        rebuild_status.text("🔍 チャンキング中...")
+                        rebuild_progress.progress(60)
+
+                        rebuild_status.text("💾 インデックス構築中...")
+                        rebuild_progress.progress(80)
+
+                        # セッション状態を更新
+                        st.session_state.vectorstore = result['vectorstore']
+                        st.session_state.hybrid_retriever = result['hybrid_retriever']
+                        st.session_state.chunks_metadata = result['chunks_metadata']
+                        st.session_state.index_count = result['index_count']
+                        st.session_state.index_last_built = result['index_last_built']
+
+                        rebuild_progress.progress(100)
+                        rebuild_status.text("✅ 完了")
+
+                        st.success(f"インデックス構築完了: {result['index_count']}件のチャンクをインデックス化しました")
+
+                        time.sleep(1)
+                        rebuild_progress.empty()
+                        rebuild_status.empty()
+
+                    except Exception as e:
+                        st.error(f"インデックス再構築中にエラーが発生しました: {e}")
+
+        st.divider()
+
         # インデックス再構築ボタン
         if st.button("🔄 インデックス再構築", type="primary"):
             progress_bar = st.progress(0)
