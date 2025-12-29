@@ -486,16 +486,24 @@ def main():
     
     # 質問入力
     if prompt := st.chat_input("質問を入力してください"):
-        # ユーザーメッセージを追加
-        st.session_state.messages.append({
+        # ユーザーメッセージを追加して即座に表示
+        user_message = {
             'role': 'user',
             'content': prompt,
             'citations': []
-        })
+        }
+        st.session_state.messages.append(user_message)
         
         # 会話履歴を制限（直近5往復 = 10メッセージ）
         if len(st.session_state.messages) > MAX_CONVERSATION_HISTORY * 2:
             st.session_state.messages = st.session_state.messages[-MAX_CONVERSATION_HISTORY * 2:]
+        
+        # ユーザーメッセージを表示
+        render_chat_message(
+            role=user_message['role'],
+            content=user_message['content'],
+            citations=user_message.get('citations', [])
+        )
         
         # 質問処理
         try:
@@ -503,13 +511,25 @@ def main():
                 result = handle_query(prompt, st.session_state)
                 
                 # アシスタントメッセージを追加（警告は既にapply_guardrailsで追加済み）
-                st.session_state.messages.append({
+                assistant_message = {
                     'role': 'assistant',
                     'content': result['answer'],
                     'citations': result['citations'],
                     'flags': result['flags'],
                     'warning_reason': result.get('warning_reason')
-                })
+                }
+                st.session_state.messages.append(assistant_message)
+                
+                # アシスタントメッセージを表示
+                render_chat_message(
+                    role=assistant_message['role'],
+                    content=assistant_message['content'],
+                    citations=assistant_message.get('citations', [])
+                )
+                
+                # 危険操作警告バナー
+                if assistant_message.get('flags', {}).get('dangerous_operation', False):
+                    render_danger_banner()
                 
                 # ログ記録
                 log_query(
@@ -537,21 +557,21 @@ def main():
         except IndexNotBuiltError:
             handle_index_not_built()
             # ユーザーメッセージを削除（エラー時は追加しない）
-            st.session_state.messages.pop()
+            if st.session_state.messages and st.session_state.messages[-1]['role'] == 'user':
+                st.session_state.messages.pop()
         except APIError as e:
             st.error(f"❌ {e}")
             # ユーザーメッセージを削除
-            st.session_state.messages.pop()
+            if st.session_state.messages and st.session_state.messages[-1]['role'] == 'user':
+                st.session_state.messages.pop()
         except Exception as e:
             st.error(f"❌ 予期しないエラーが発生しました: {e}")
             import traceback
             with st.expander("エラー詳細", expanded=False):
                 st.code(traceback.format_exc())
             # ユーザーメッセージを削除
-            st.session_state.messages.pop()
-        
-        # 画面を更新
-        st.rerun()
+            if st.session_state.messages and st.session_state.messages[-1]['role'] == 'user':
+                st.session_state.messages.pop()
 
 
 if __name__ == "__main__":

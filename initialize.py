@@ -72,11 +72,11 @@ def load_documents(data_folder: str) -> Tuple[List[Dict], List[tuple[str, Except
             try:
                 # PDFを見出し推定→セクション化
                 pdf_sections = pdf_to_sections(str(pdf_file))
-                
+
                 # 各セクションをDocumentとして追加
                 for section in pdf_sections:
                     documents.append(section)
-                    
+
             except ValueError as e:
                 # テキスト抽出できないPDF（画像のみ）
                 error_msg = str(e)
@@ -84,7 +84,11 @@ def load_documents(data_folder: str) -> Tuple[List[Dict], List[tuple[str, Except
             except Exception as e:
                 errors.append((str(pdf_file), PDFReadError(f"PDF読み込みエラー: {e}")))
     except ImportError:
-        pass  # pypdfがインストールされていない場合はスキップ
+        # pypdfがインストールされていない場合、PDFファイルがあれば警告
+        pdf_files = list(data_path.glob("*.pdf"))
+        if pdf_files:
+            for pdf_file in pdf_files:
+                errors.append((str(pdf_file), Exception("pypdfがインストールされていません。pip install pypdf を実行してください。")))
     
     if not documents and not errors:
         raise DataFolderEmptyError(f"データフォルダ `{data_folder}` に有効なファイルが見つかりません。")

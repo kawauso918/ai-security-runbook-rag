@@ -71,7 +71,18 @@ def update_retriever_weights(
         bm25_weight: BM25の重み
         vector_weight: ベクトル検索の重み
     """
-    ensemble_retriever.weights = [bm25_weight, vector_weight]
+    # EnsembleRetrieverのweightsを更新（Pydanticモデルの場合は直接設定可能）
+    if hasattr(ensemble_retriever, 'weights'):
+        # weightsがリストの場合
+        if isinstance(ensemble_retriever.weights, list):
+            ensemble_retriever.weights = [bm25_weight, vector_weight]
+        # weightsが属性として設定可能な場合
+        else:
+            try:
+                object.__setattr__(ensemble_retriever, 'weights', [bm25_weight, vector_weight])
+            except:
+                # 更新できない場合はスキップ（初期化時に設定されているため）
+                pass
 
 
 def update_retriever_k(
@@ -84,13 +95,25 @@ def update_retriever_k(
         ensemble_retriever: 更新対象のEnsembleRetriever
         k: 返す結果数
     """
-    ensemble_retriever.k = k
-    # 各Retrieverのkも更新
+    # EnsembleRetriever自体にはkフィールドがないため、各Retrieverのkを更新
     for retriever in ensemble_retriever.retrievers:
+        # BM25Retrieverの場合
         if hasattr(retriever, 'k'):
-            retriever.k = k
+            try:
+                retriever.k = k
+            except:
+                # 更新できない場合はスキップ
+                pass
+        # VectorRetrieverの場合
         if hasattr(retriever, 'search_kwargs'):
-            retriever.search_kwargs['k'] = k
+            if isinstance(retriever.search_kwargs, dict):
+                retriever.search_kwargs['k'] = k
+            else:
+                try:
+                    # search_kwargsが属性の場合
+                    object.__setattr__(retriever, 'search_kwargs', {'k': k})
+                except:
+                    pass
 
 
 def search_with_scores(
@@ -116,11 +139,22 @@ def search_with_scores(
             'updated_at': str
         }
     """
-    # k値を更新
-    update_retriever_k(ensemble_retriever, k)
+    # k値を更新（各Retrieverの設定を更新）
+    # 注意: EnsembleRetriever自体にはkフィールドがないため、各Retrieverのkを更新
+    for retriever in ensemble_retriever.retrievers:
+        # BM25Retrieverの場合
+        if hasattr(retriever, 'k'):
+            try:
+                retriever.k = k
+            except:
+                pass
+        # VectorRetrieverの場合
+        if hasattr(retriever, 'search_kwargs'):
+            if isinstance(retriever.search_kwargs, dict):
+                retriever.search_kwargs['k'] = k
 
-    # 検索実行（EnsembleRetrieverはget_relevant_documentsを使用）
-    docs = ensemble_retriever.get_relevant_documents(query)
+    # 検索実行（EnsembleRetrieverはinvokeを使用）
+    docs = ensemble_retriever.invoke(query)
 
     # 結果を整形（スコアを追加）
     results = []
@@ -185,7 +219,7 @@ def hybrid_search(
         search_kwargs={"k": k}
     )
 
-    docs = vector_retriever.get_relevant_documents(query)
+    docs = vector_retriever.invoke(query)
 
     results = []
     for i, doc in enumerate(docs[:k]):

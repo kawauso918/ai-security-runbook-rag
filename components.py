@@ -61,27 +61,25 @@ def render_chat_message(role: str, content: str, citations: List[Dict] = None) -
                         excerpt = text[:200] + '...' if len(text) > 200 else text
                         
                         st.markdown(f"**{i}. {file_name}**")
-                        if heading:
-                            # ページ範囲がある場合は表示
-                            page_start = citation.get('page_start')
-                            page_end = citation.get('page_end')
-                            if page_start and page_end:
-                                if page_start == page_end:
-                                    heading_display = f"{heading} (p{page_start})"
-                                else:
-                                    heading_display = f"{heading} (p{page_start}-{page_end})"
+
+                        # ページ範囲を取得・生成
+                        page_start = citation.get('page_start')
+                        page_end = citation.get('page_end')
+                        page_range = None
+                        if page_start and page_end:
+                            if page_start == page_end:
+                                page_range = f"p{page_start}"
                             else:
-                                heading_display = heading
-                            st.caption(f"見出し: {heading_display}")
-                        else:
-                            # 見出しがない場合でもページ範囲があれば表示
-                            page_start = citation.get('page_start')
-                            page_end = citation.get('page_end')
-                            if page_start and page_end:
-                                if page_start == page_end:
-                                    st.caption(f"ページ: {page_start}")
-                                else:
-                                    st.caption(f"ページ: {page_start}-{page_end}")
+                                page_range = f"p{page_start}-{page_end}"
+
+                        # 見出しとページ範囲を表示
+                        if heading:
+                            if page_range:
+                                st.caption(f"見出し: {heading} ({page_range})")
+                            else:
+                                st.caption(f"見出し: {heading}")
+                        elif page_range:
+                            st.caption(f"ページ: {page_range.lstrip('p')}")
                         st.caption(f"スコア: {score:.2f}")
                         st.text(excerpt)
                         if i < len(citations):
