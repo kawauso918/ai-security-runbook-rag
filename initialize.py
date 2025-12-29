@@ -13,7 +13,7 @@ from constants import (
     DEFAULT_EMBEDDING_MODEL, CHROMA_DB_PATH,
     DEFAULT_BM25_WEIGHT, DEFAULT_VECTOR_WEIGHT, DEFAULT_K
 )
-from utils import chunk_by_headings
+from utils import chunk_by_headings, pdf_to_sections
 from retriever import create_hybrid_retriever
 from error_handler import DataFolderEmptyError, PDFReadError, display_error_summary
 
@@ -65,26 +65,22 @@ def load_documents(data_folder: str) -> Tuple[List[Dict], List[tuple[str, Except
         except Exception as e:
             errors.append((str(txt_file), e))
     
-    # PDFファイルの読み込み（pypdf使用）
+    # PDFファイルの読み込み（pypdf使用、見出し推定→セクション化）
     try:
         from pypdf import PdfReader
         for pdf_file in data_path.glob("*.pdf"):
             try:
-                reader = PdfReader(pdf_file)
-                if reader.is_encrypted:
-                    errors.append((str(pdf_file), PDFReadError("パスワード保護されたPDFファイルです")))
-                    continue
+                # PDFを見出し推定→セクション化
+                pdf_sections = pdf_to_sections(str(pdf_file))
                 
-                content = ""
-                for page in reader.pages:
-                    content += page.extract_text() + "\n"
-                
-                if content.strip():  # 空ファイルはスキップ
-                    documents.append({
-                        'file_path': str(pdf_file),
-                        'content': content,
-                        'updated_at': datetime.fromtimestamp(pdf_file.stat().st_mtime).isoformat()
-                    })
+                # 各セクションをDocumentとして追加
+                for section in pdf_sections:
+                    documents.append(section)
+                    
+            except ValueError as e:
+                # テキスト抽出できないPDF（画像のみ）
+                error_msg = str(e)
+                errors.append((str(pdf_file), PDFReadError(error_msg)))
             except Exception as e:
                 errors.append((str(pdf_file), PDFReadError(f"PDF読み込みエラー: {e}")))
     except ImportError:
@@ -101,19 +97,73 @@ def process_documents(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP
 ) -> List[Dict]:
-    """ドキュメントをチャンキング"""
+    """ドキュメントをチャンキング
+    
+    PDF由来のDocumentは既にセクション化されているため、
+    セクション内でさらにチャンキングする
+    """
     all_chunks = []
     
     for doc in documents:
-        chunks = chunk_by_headings(
-            doc['content'],
-            doc['file_path'],
-            chunk_size=chunk_size,
-            overlap=overlap
-        )
-        all_chunks.extend(chunks)
+        # PDF由来のDocument（page_start/page_endがある）の場合
+        if 'page_start' in doc and 'page_end' in doc:
+            # セクション内でチャンキング
+            section_text = doc['content']
+            section_chunks = _chunk_text(section_text, chunk_size, overlap)
+            
+            for i, chunk_text in enumerate(section_chunks):
+                chunk_id = f"{doc['file_path']}_p{doc['page_start']}-{doc['page_end']}_{i}"
+                chunk = {
+                    'chunk_id': chunk_id,
+                    'text': chunk_text.strip(),
+                    'heading': doc['heading'],
+                    'file': doc['file_path'],
+                    'updated_at': doc['updated_at'],
+                    'chunk_index': len(all_chunks),
+                    'page_start': doc['page_start'],
+                    'page_end': doc['page_end']
+                }
+                all_chunks.append(chunk)
+        else:
+            # Markdown/TXT由来のDocument（従来通り）
+            chunks = chunk_by_headings(
+                doc['content'],
+                doc['file_path'],
+                chunk_size=chunk_size,
+                overlap=overlap
+            )
+            all_chunks.extend(chunks)
     
     return all_chunks
+
+
+def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
+    """テキストを指定サイズでチャンキング（utils.pyから移植）"""
+    if len(text) <= chunk_size:
+        return [text]
+    
+    chunks = []
+    start = 0
+    
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        
+        # オーバーラップ処理
+        if end < len(text) and overlap > 0:
+            next_start = end - overlap
+            for i in range(next_start, end):
+                if text[i] in ['。', '\n', '.', '!', '?']:
+                    next_start = i + 1
+                    break
+        
+        chunks.append(chunk)
+        start = end - overlap if overlap > 0 else end
+        
+        if start >= len(text):
+            break
+    
+    return chunks
 
 
 def build_indexes(
@@ -138,24 +188,35 @@ def build_indexes(
     # メタデータ辞書を作成
     chunks_metadata = {}
     for chunk in chunks:
-        chunks_metadata[chunk['chunk_id']] = {
+        metadata = {
             'file': chunk['file'],
             'heading': chunk['heading'],
             'updated_at': chunk['updated_at'],
             'text': chunk['text']
         }
+        # PDF由来の場合はページ情報を追加
+        if 'page_start' in chunk:
+            metadata['page_start'] = chunk['page_start']
+        if 'page_end' in chunk:
+            metadata['page_end'] = chunk['page_end']
+        chunks_metadata[chunk['chunk_id']] = metadata
 
     # ベクトルストア構築
     texts = [chunk['text'] for chunk in chunks]
-    metadatas = [
-        {
+    metadatas = []
+    for chunk in chunks:
+        meta = {
             'chunk_id': chunk['chunk_id'],
             'file': chunk['file'],
             'heading': chunk['heading'],
             'updated_at': chunk['updated_at']
         }
-        for chunk in chunks
-    ]
+        # PDF由来の場合はページ情報を追加
+        if 'page_start' in chunk:
+            meta['page_start'] = chunk['page_start']
+        if 'page_end' in chunk:
+            meta['page_end'] = chunk['page_end']
+        metadatas.append(meta)
 
     embeddings = OpenAIEmbeddings(model=embedding_model)
 

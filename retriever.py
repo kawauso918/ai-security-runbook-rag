@@ -141,6 +141,11 @@ def search_with_scores(
             'heading': doc.metadata.get('heading', ''),
             'updated_at': doc.metadata.get('updated_at', '')
         }
+        # PDF由来の場合はページ情報を追加
+        if 'page_start' in doc.metadata:
+            result['page_start'] = doc.metadata['page_start']
+        if 'page_end' in doc.metadata:
+            result['page_end'] = doc.metadata['page_end']
         results.append(result)
 
     return results
@@ -198,6 +203,11 @@ def hybrid_search(
             'heading': doc.metadata.get('heading', ''),
             'updated_at': doc.metadata.get('updated_at', '')
         }
+        # PDF由来の場合はページ情報を追加
+        if 'page_start' in doc.metadata:
+            result['page_start'] = doc.metadata['page_start']
+        if 'page_end' in doc.metadata:
+            result['page_end'] = doc.metadata['page_end']
         results.append(result)
 
     return results

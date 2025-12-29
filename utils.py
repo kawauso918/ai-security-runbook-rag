@@ -3,8 +3,15 @@
 import re
 import os
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
+from collections import Counter
 from sudachipy import dictionary, tokenizer
+
+from constants import (
+    PDF_MAX_HEADING_LEN, PDF_MIN_HEADING_LEN,
+    HEADING_SCORE_THRESHOLD, HEADING_SCORE_THRESHOLD_STRICT,
+    HEADING_PATTERNS, HEADING_KEYWORDS
+)
 
 
 def extract_headings(text: str) -> List[Dict]:
@@ -197,6 +204,273 @@ def tokenize_japanese(text: str, preserve_special_tokens: bool = True) -> List[s
             return tokens
         except Exception:
             return list(text)
+
+
+# ==================== PDF処理関数 ====================
+
+def extract_pdf_pages(pdf_path: str) -> List[Tuple[int, str]]:
+    """PDFからページごとにテキストを抽出
+    
+    Args:
+        pdf_path: PDFファイルのパス
+    
+    Returns:
+        [(page_no, text), ...] のリスト（page_noは1始まり）
+    """
+    try:
+        from pypdf import PdfReader
+        
+        reader = PdfReader(pdf_path)
+        if reader.is_encrypted:
+            raise ValueError("パスワード保護されたPDFファイルです")
+        
+        pages = []
+        for i, page in enumerate(reader.pages, 1):
+            text = page.extract_text()
+            pages.append((i, text))
+        
+        return pages
+    except ImportError:
+        raise ImportError("pypdfがインストールされていません。pip install pypdf を実行してください。")
+    except Exception as e:
+        raise Exception(f"PDF読み込みエラー: {e}")
+
+
+def normalize_pdf_text(text: str) -> str:
+    """PDF抽出テキストのノイズを軽減
+    
+    Args:
+        text: PDFから抽出したテキスト
+    
+    Returns:
+        正規化されたテキスト
+    """
+    # 連続スペースを1つに
+    text = re.sub(r' +', ' ', text)
+    
+    # 行末ハイフン分割を結合（"-\n" を削除）
+    text = re.sub(r'-\n+', '', text)
+    
+    # 連続改行を2つまでに圧縮
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    # 先頭・末尾の空白・改行を削除
+    text = text.strip()
+    
+    return text
+
+
+def score_heading_line(line: str) -> int:
+    """行が見出しかどうかをスコアリング
+    
+    Args:
+        line: 評価する行
+    
+    Returns:
+        スコア（高いほど見出しの可能性が高い）
+    """
+    line = line.strip()
+    if not line:
+        return 0
+    
+    score = 0
+    
+    # 文字数チェック
+    char_count = len(line)
+    if PDF_MIN_HEADING_LEN <= char_count <= PDF_MAX_HEADING_LEN:
+        score += 1
+    else:
+        return 0  # 文字数が範囲外なら見出しではない
+    
+    # 句点で終わらない（見出しは通常句点なし）
+    if not line.endswith('。'):
+        score += 1
+    
+    # 記号が少ない（記号が多い行は見出しではない）
+    symbol_count = len(re.findall(r'[!-/:-@\[-`{-~]', line))
+    if symbol_count < char_count * 0.2:  # 記号が20%未満
+        score += 1
+    
+    # パターンマッチング
+    for pattern in HEADING_PATTERNS:
+        if re.match(pattern, line):
+            score += 3
+            break
+    
+    # キーワードチェック
+    for keyword in HEADING_KEYWORDS:
+        if keyword in line:
+            score += 1
+            break
+    
+    return score
+
+
+def remove_repeated_lines(pages_texts: List[Tuple[int, str]]) -> List[Tuple[int, str]]:
+    """ヘッダー/フッターっぽい反復行を除外（簡易版）
+    
+    Args:
+        pages_texts: [(page_no, text), ...] のリスト
+    
+    Returns:
+        反復行を除外した [(page_no, text), ...] のリスト
+    """
+    if len(pages_texts) < 3:
+        return pages_texts
+    
+    # 各行の出現回数をカウント
+    all_lines = []
+    for _, text in pages_texts:
+        lines = text.split('\n')
+        all_lines.extend([line.strip() for line in lines if line.strip()])
+    
+    line_counts = Counter(all_lines)
+    
+    # 3回以上出現する行を除外対象とする（簡易）
+    repeated_lines = {line for line, count in line_counts.items() if count >= 3}
+    
+    # 除外して再構築
+    cleaned_pages = []
+    for page_no, text in pages_texts:
+        lines = text.split('\n')
+        cleaned_lines = [
+            line for line in lines
+            if line.strip() not in repeated_lines or len(line.strip()) > 50
+        ]
+        cleaned_text = '\n'.join(cleaned_lines)
+        cleaned_pages.append((page_no, cleaned_text))
+    
+    return cleaned_pages
+
+
+def pdf_to_sections(pdf_path: str) -> List[Dict]:
+    """PDFを見出し推定→セクション化してDocumentリストに変換
+    
+    Args:
+        pdf_path: PDFファイルのパス
+    
+    Returns:
+        Documentのリスト。各Documentは以下の構造:
+        {
+            'file_path': str,
+            'content': str,  # セクション本文
+            'heading': str,  # 見出し（フォールバック時は "PAGE {n}"）
+            'page_start': int,  # 開始ページ（1始まり）
+            'page_end': int,  # 終了ページ（1始まり）
+            'updated_at': str  # ISO形式
+        }
+    """
+    # PDFからページごとにテキスト抽出
+    pages = extract_pdf_pages(pdf_path)
+    
+    if not pages:
+        return []
+    
+    # テキストがほぼ取れない場合（画像のみPDFの可能性）
+    total_text_length = sum(len(text) for _, text in pages)
+    if total_text_length < 100:
+        raise ValueError("このPDFはテキスト抽出できませんでした（スキャンPDFの可能性）")
+    
+    # テキスト正規化
+    normalized_pages = []
+    for page_no, text in pages:
+        normalized_text = normalize_pdf_text(text)
+        normalized_pages.append((page_no, normalized_text))
+    
+    # 反復行（ヘッダー/フッター）を除外
+    cleaned_pages = remove_repeated_lines(normalized_pages)
+    
+    # 全ページのテキストを結合して行に分解
+    all_lines = []
+    line_to_page = {}  # 行がどのページに属するか
+    
+    for page_no, text in cleaned_pages:
+        lines = text.split('\n')
+        for line in lines:
+            line_stripped = line.strip()
+            if line_stripped:
+                all_lines.append(line_stripped)
+                line_to_page[len(all_lines) - 1] = page_no
+    
+    if not all_lines:
+        # フォールバック: ページ単位でセクション化
+        sections = []
+        for page_no, text in cleaned_pages:
+            if text.strip():
+                sections.append({
+                    'file_path': pdf_path,
+                    'content': text.strip(),
+                    'heading': f"PAGE {page_no}",
+                    'page_start': page_no,
+                    'page_end': page_no,
+                    'updated_at': datetime.fromtimestamp(os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0).isoformat()
+                })
+        return sections
+    
+    # 見出し候補をスコアリング
+    heading_scores = []
+    for i, line in enumerate(all_lines):
+        score = score_heading_line(line)
+        heading_scores.append((i, line, score))
+    
+    # 見出し候補が多すぎる場合は閾値を上げる
+    high_score_count = sum(1 for _, _, score in heading_scores if score >= HEADING_SCORE_THRESHOLD)
+    threshold = HEADING_SCORE_THRESHOLD_STRICT if high_score_count > len(all_lines) * 0.3 else HEADING_SCORE_THRESHOLD
+    
+    # 見出しとして採用
+    headings = [
+        (i, line) for i, line, score in heading_scores
+        if score >= threshold
+    ]
+    
+    # 見出しが少なすぎる場合はフォールバック
+    if len(headings) < 2:
+        # フォールバック: ページ単位でセクション化
+        sections = []
+        for page_no, text in cleaned_pages:
+            if text.strip():
+                sections.append({
+                    'file_path': pdf_path,
+                    'content': text.strip(),
+                    'heading': f"PAGE {page_no}",
+                    'page_start': page_no,
+                    'page_end': page_no,
+                    'updated_at': datetime.fromtimestamp(os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0).isoformat()
+                })
+        return sections
+    
+    # 見出しごとにセクション分割
+    sections = []
+    for idx, (heading_idx, heading_text) in enumerate(headings):
+        # セクションの開始行
+        start_line_idx = heading_idx
+        
+        # セクションの終了行（次の見出しの前まで）
+        if idx + 1 < len(headings):
+            end_line_idx = headings[idx + 1][0]
+        else:
+            end_line_idx = len(all_lines)
+        
+        # セクション本文を取得
+        section_lines = all_lines[start_line_idx:end_line_idx]
+        # 見出し行を除く
+        section_content = '\n'.join(section_lines[1:]) if len(section_lines) > 1 else '\n'.join(section_lines)
+        
+        # ページ範囲を取得
+        page_start = line_to_page.get(start_line_idx, 1)
+        page_end = line_to_page.get(end_line_idx - 1, page_start)
+        
+        if section_content.strip():
+            sections.append({
+                'file_path': pdf_path,
+                'content': section_content.strip(),
+                'heading': heading_text,
+                'page_start': page_start,
+                'page_end': page_end,
+                'updated_at': datetime.fromtimestamp(os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0).isoformat()
+            })
+    
+    return sections
 
 
 

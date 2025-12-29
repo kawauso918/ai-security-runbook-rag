@@ -78,7 +78,20 @@ def handle_api_error(error: Exception, retry_count: int = 0) -> Tuple[bool, str]
 def display_error_summary(errors: list[tuple[str, Exception]]) -> None:
     """エラーサマリーを表示"""
     if errors:
-        with st.expander("⚠️ エラー詳細", expanded=False):
-            for file_path, error in errors:
-                st.error(f"`{file_path}`: {error}")
+        # PDFエラーを特別に表示
+        pdf_errors = [e for e in errors if isinstance(e[1], PDFReadError)]
+        other_errors = [e for e in errors if not isinstance(e[1], PDFReadError)]
+        
+        if pdf_errors:
+            for file_path, error in pdf_errors:
+                error_msg = str(error)
+                if "スキャンPDF" in error_msg or "テキスト抽出" in error_msg:
+                    st.warning(f"⚠️ `{file_path}`: {error_msg}")
+                else:
+                    st.warning(f"⚠️ `{file_path}`: {error_msg}")
+        
+        if other_errors:
+            with st.expander("⚠️ その他のエラー詳細", expanded=False):
+                for file_path, error in other_errors:
+                    st.error(f"`{file_path}`: {error}")
 
