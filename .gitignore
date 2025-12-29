@@ -44,6 +44,9 @@ logs/
 chroma_db/
 *.log
 
+# Data files (exclude large PDFs, keep sample markdown files)
+data/*.pdf
+
 # OS
 .DS_Store
 Thumbs.db
