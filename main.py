@@ -21,6 +21,11 @@ from components import (
     render_citation, render_danger_banner, render_security_notice,
     render_chat_message
 )
+from error_handler import (
+    DataFolderEmptyError, PDFReadError, IndexNotBuiltError, APIError,
+    handle_data_folder_empty, handle_pdf_read_error, handle_index_not_built,
+    handle_api_error, display_error_summary
+)
 from judge import (
     load_eval_dataset, run_evaluation_suite, save_evaluation_results,
     format_evaluation_summary
@@ -82,24 +87,30 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
     """質問処理のオーケストレーション"""
     start_time = time.time()
 
+    # インデックス未構築チェック
+    if session_state['hybrid_retriever'] is None:
+        raise IndexNotBuiltError("インデックスが構築されていません。")
+
     # Retrieverの重みとkを更新
-    if session_state['hybrid_retriever'] is not None:
-        update_retriever_weights(
-            session_state['hybrid_retriever'],
-            session_state['bm25_weight'],
-            session_state['vector_weight']
-        )
-        update_retriever_k(
-            session_state['hybrid_retriever'],
-            session_state['k']
-        )
+    update_retriever_weights(
+        session_state['hybrid_retriever'],
+        session_state['bm25_weight'],
+        session_state['vector_weight']
+    )
+    update_retriever_k(
+        session_state['hybrid_retriever'],
+        session_state['k']
+    )
 
     # 検索実行
-    search_results = search_with_scores(
-        ensemble_retriever=session_state['hybrid_retriever'],
-        query=user_query,
-        k=session_state['k']
-    )
+    try:
+        search_results = search_with_scores(
+            ensemble_retriever=session_state['hybrid_retriever'],
+            query=user_query,
+            k=session_state['k']
+        )
+    except Exception as e:
+        raise APIError(f"検索処理エラー: {e}")
     
     # ガードレール適用（検索後、LLM呼び出し前）
     guardrail_result = apply_guardrails(
@@ -167,14 +178,32 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
         temperature=0.0
     )
     
-    # プロンプト実行
+    # プロンプト実行（ストリーミング対応）
     prompt = prompt_template.format_messages(
         context=context_text,
         history=history_text,
         question=user_query
     )
     
-    response = llm.invoke(prompt)
+    # API呼び出し（リトライ対応）
+    max_retries = 3
+    retry_count = 0
+    response = None
+    
+    while retry_count < max_retries:
+        try:
+            response = llm.invoke(prompt)
+            break
+        except Exception as e:
+            retry_count += 1
+            should_retry, error_msg = handle_api_error(e, retry_count)
+            if not should_retry:
+                raise APIError(error_msg)
+            if retry_count < max_retries:
+                time.sleep(2 ** retry_count)  # 指数バックオフ
+            else:
+                raise APIError(f"API呼び出しが{max_retries}回失敗しました: {e}")
+    
     answer = response.content.strip()
     
     # ガードレール適用（回答生成後、危険操作検知）
@@ -262,19 +291,59 @@ def render_sidebar():
         
         # インデックス再構築ボタン
         if st.button("🔄 インデックス再構築", type="primary"):
-            with st.spinner("インデックスを構築中..."):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            try:
+                status_text.text("📂 データフォルダを確認中...")
+                progress_bar.progress(10)
+                
+                status_text.text("📄 ドキュメントを読み込み中...")
+                progress_bar.progress(30)
+                
                 result = initialize_system(
                     st.session_state.data_folder,
                     bm25_weight=st.session_state.bm25_weight,
                     vector_weight=st.session_state.vector_weight,
                     k=st.session_state.k
                 )
+                
+                status_text.text("🔍 チャンキング中...")
+                progress_bar.progress(50)
+                
+                status_text.text("💾 ベクトルDBを構築中...")
+                progress_bar.progress(70)
+                
+                status_text.text("🔎 BM25インデックスを構築中...")
+                progress_bar.progress(90)
+                
+                # セッション状態を更新
                 st.session_state.vectorstore = result['vectorstore']
                 st.session_state.hybrid_retriever = result['hybrid_retriever']
                 st.session_state.chunks_metadata = result['chunks_metadata']
                 st.session_state.index_count = result['index_count']
                 st.session_state.index_last_built = result['index_last_built']
-                st.success(f"インデックス構築完了: {result['index_count']}件")
+                
+                progress_bar.progress(100)
+                status_text.text("✅ 完了")
+                
+                st.success(f"インデックス構築完了: {result['index_count']}件のチャンクをインデックス化しました")
+                
+                # エラーがある場合は表示
+                if result.get('errors'):
+                    display_error_summary(result['errors'])
+                    
+            except DataFolderEmptyError as e:
+                progress_bar.empty()
+                status_text.empty()
+                handle_data_folder_empty(st.session_state.data_folder)
+            except Exception as e:
+                progress_bar.empty()
+                status_text.empty()
+                st.error(f"❌ インデックス構築中にエラーが発生しました: {e}")
+                import traceback
+                with st.expander("エラー詳細", expanded=False):
+                    st.code(traceback.format_exc())
         
         # インデックス状態表示
         st.divider()
@@ -424,37 +493,62 @@ def main():
             'citations': []
         })
         
+        # 会話履歴を制限（直近5往復 = 10メッセージ）
+        if len(st.session_state.messages) > MAX_CONVERSATION_HISTORY * 2:
+            st.session_state.messages = st.session_state.messages[-MAX_CONVERSATION_HISTORY * 2:]
+        
         # 質問処理
-        with st.spinner("回答を生成中..."):
-            result = handle_query(prompt, st.session_state)
-            
-            # アシスタントメッセージを追加（警告は既にapply_guardrailsで追加済み）
-            st.session_state.messages.append({
-                'role': 'assistant',
-                'content': result['answer'],
-                'citations': result['citations'],
-                'flags': result['flags'],
-                'warning_reason': result.get('warning_reason')
-            })
-            
-            # ログ記録
-            log_query(
-                query=prompt,
-                search_results=result['citations'],
-                answer=result['answer'],
-                processing_time=result['processing_time'],
-                token_usage=result['token_usage'],
-                cost=result['cost'],
-                search_config={
-                    'k': st.session_state.k,
-                    'bm25_weight': st.session_state.bm25_weight,
-                    'vector_weight': st.session_state.vector_weight
-                },
-                flags=result['flags'],
-                warning_reason=result.get('warning_reason'),
-                top_score=result.get('top_score', 0.0),
-                session_id=st.session_state.session_id
-            )
+        try:
+            with st.spinner("回答を生成中..."):
+                result = handle_query(prompt, st.session_state)
+                
+                # アシスタントメッセージを追加（警告は既にapply_guardrailsで追加済み）
+                st.session_state.messages.append({
+                    'role': 'assistant',
+                    'content': result['answer'],
+                    'citations': result['citations'],
+                    'flags': result['flags'],
+                    'warning_reason': result.get('warning_reason')
+                })
+                
+                # ログ記録
+                log_query(
+                    query=prompt,
+                    search_results=result['citations'],
+                    answer=result['answer'],
+                    processing_time=result['processing_time'],
+                    token_usage=result['token_usage'],
+                    cost=result['cost'],
+                    search_config={
+                        'k': st.session_state.k,
+                        'bm25_weight': st.session_state.bm25_weight,
+                        'vector_weight': st.session_state.vector_weight
+                    },
+                    flags=result['flags'],
+                    warning_reason=result.get('warning_reason'),
+                    top_score=result.get('top_score', 0.0),
+                    session_id=st.session_state.session_id
+                )
+                
+                # レイテンシ警告（5秒超過）
+                if result['processing_time'] > 5.0:
+                    st.warning(f"⚠️ 処理時間が5秒を超過しました（{result['processing_time']:.1f}秒）")
+        
+        except IndexNotBuiltError:
+            handle_index_not_built()
+            # ユーザーメッセージを削除（エラー時は追加しない）
+            st.session_state.messages.pop()
+        except APIError as e:
+            st.error(f"❌ {e}")
+            # ユーザーメッセージを削除
+            st.session_state.messages.pop()
+        except Exception as e:
+            st.error(f"❌ 予期しないエラーが発生しました: {e}")
+            import traceback
+            with st.expander("エラー詳細", expanded=False):
+                st.code(traceback.format_exc())
+            # ユーザーメッセージを削除
+            st.session_state.messages.pop()
         
         # 画面を更新
         st.rerun()

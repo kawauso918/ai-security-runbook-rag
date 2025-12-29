@@ -45,10 +45,27 @@ def render_chat_message(role: str, content: str, citations: List[Dict] = None) -
         with st.chat_message("assistant"):
             st.markdown(content)
             
-            # 引用を表示
+            # 引用を表示（折りたたみUI）
             if citations:
-                st.markdown("### 引用元")
-                for citation in citations:
-                    st.markdown(render_citation(citation), unsafe_allow_html=True)
+                with st.expander(f"📚 引用元 ({len(citations)}件)", expanded=False):
+                    for i, citation in enumerate(citations, 1):
+                        file = citation.get('file', '')
+                        heading = citation.get('heading', '')
+                        score = citation.get('score', 0.0)
+                        text = citation.get('text', '')
+                        
+                        # ファイル名のみ取得
+                        file_name = file.split('/')[-1] if '/' in file else file
+                        
+                        # 抜粋テキスト（最大200文字）
+                        excerpt = text[:200] + '...' if len(text) > 200 else text
+                        
+                        st.markdown(f"**{i}. {file_name}**")
+                        if heading:
+                            st.caption(f"見出し: {heading}")
+                        st.caption(f"スコア: {score:.2f}")
+                        st.text(excerpt)
+                        if i < len(citations):
+                            st.divider()
 
 

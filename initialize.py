@@ -15,41 +15,55 @@ from constants import (
 )
 from utils import chunk_by_headings
 from retriever import create_hybrid_retriever
+from error_handler import DataFolderEmptyError, PDFReadError, display_error_summary
 
 
-def load_documents(data_folder: str) -> List[Dict]:
-    """データフォルダからPDF/Markdownを読み込み"""
+def load_documents(data_folder: str) -> Tuple[List[Dict], List[tuple[str, Exception]]]:
+    """データフォルダからPDF/Markdownを読み込み
+    
+    Returns:
+        (documents, errors) のタプル
+        documents: 読み込み成功したドキュメントのリスト
+        errors: (ファイルパス, エラー) のリスト
+    """
     documents = []
+    errors = []
     data_path = Path(data_folder)
     
     if not data_path.exists():
-        return documents
+        raise DataFolderEmptyError(f"データフォルダ `{data_folder}` が存在しません。")
     
     # Markdownファイルを読み込み
     for md_file in data_path.glob("*.md"):
         try:
             with open(md_file, 'r', encoding='utf-8') as f:
                 content = f.read()
-                documents.append({
-                    'file_path': str(md_file),
-                    'content': content,
-                    'updated_at': datetime.fromtimestamp(md_file.stat().st_mtime).isoformat()
-                })
+                if content.strip():  # 空ファイルはスキップ
+                    documents.append({
+                        'file_path': str(md_file),
+                        'content': content,
+                        'updated_at': datetime.fromtimestamp(md_file.stat().st_mtime).isoformat()
+                    })
+        except UnicodeDecodeError as e:
+            errors.append((str(md_file), Exception(f"エンコーディングエラー: UTF-8で読み込めませんでした")))
         except Exception as e:
-            print(f"Error reading {md_file}: {e}")
+            errors.append((str(md_file), e))
     
     # テキストファイルも読み込み
     for txt_file in data_path.glob("*.txt"):
         try:
             with open(txt_file, 'r', encoding='utf-8') as f:
                 content = f.read()
-                documents.append({
-                    'file_path': str(txt_file),
-                    'content': content,
-                    'updated_at': datetime.fromtimestamp(txt_file.stat().st_mtime).isoformat()
-                })
+                if content.strip():  # 空ファイルはスキップ
+                    documents.append({
+                        'file_path': str(txt_file),
+                        'content': content,
+                        'updated_at': datetime.fromtimestamp(txt_file.stat().st_mtime).isoformat()
+                    })
+        except UnicodeDecodeError as e:
+            errors.append((str(txt_file), Exception(f"エンコーディングエラー: UTF-8で読み込めませんでした")))
         except Exception as e:
-            print(f"Error reading {txt_file}: {e}")
+            errors.append((str(txt_file), e))
     
     # PDFファイルの読み込み（pypdf使用）
     try:
@@ -57,21 +71,29 @@ def load_documents(data_folder: str) -> List[Dict]:
         for pdf_file in data_path.glob("*.pdf"):
             try:
                 reader = PdfReader(pdf_file)
+                if reader.is_encrypted:
+                    errors.append((str(pdf_file), PDFReadError("パスワード保護されたPDFファイルです")))
+                    continue
+                
                 content = ""
                 for page in reader.pages:
                     content += page.extract_text() + "\n"
                 
-                documents.append({
-                    'file_path': str(pdf_file),
-                    'content': content,
-                    'updated_at': datetime.fromtimestamp(pdf_file.stat().st_mtime).isoformat()
-                })
+                if content.strip():  # 空ファイルはスキップ
+                    documents.append({
+                        'file_path': str(pdf_file),
+                        'content': content,
+                        'updated_at': datetime.fromtimestamp(pdf_file.stat().st_mtime).isoformat()
+                    })
             except Exception as e:
-                print(f"Error reading {pdf_file}: {e}")
+                errors.append((str(pdf_file), PDFReadError(f"PDF読み込みエラー: {e}")))
     except ImportError:
-        print("pypdf not available, skipping PDF files")
+        pass  # pypdfがインストールされていない場合はスキップ
     
-    return documents
+    if not documents and not errors:
+        raise DataFolderEmptyError(f"データフォルダ `{data_folder}` に有効なファイルが見つかりません。")
+    
+    return documents, errors
 
 
 def process_documents(
@@ -179,9 +201,17 @@ def initialize_system(
 
     Returns:
         初期化結果の辞書
+        {
+            'vectorstore': VectorStore,
+            'hybrid_retriever': EnsembleRetriever,
+            'chunks_metadata': Dict,
+            'index_count': int,
+            'index_last_built': str,
+            'errors': List[tuple[str, Exception]]  # エラー情報
+        }
     """
     # ドキュメント読み込み
-    documents = load_documents(data_folder)
+    documents, errors = load_documents(data_folder)
 
     if not documents:
         return {
@@ -189,7 +219,8 @@ def initialize_system(
             'hybrid_retriever': None,
             'chunks_metadata': {},
             'index_count': 0,
-            'index_last_built': None
+            'index_last_built': None,
+            'errors': errors
         }
 
     # チャンキング
@@ -208,6 +239,7 @@ def initialize_system(
         'hybrid_retriever': hybrid_retriever,
         'chunks_metadata': chunks_metadata,
         'index_count': len(chunks),
-        'index_last_built': datetime.now().isoformat()
+        'index_last_built': datetime.now().isoformat(),
+        'errors': errors
     }
 

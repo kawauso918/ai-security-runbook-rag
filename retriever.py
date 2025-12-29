@@ -1,7 +1,8 @@
 """ハイブリッド検索処理（EnsembleRetriever使用）"""
 
 from typing import List, Dict, Any
-from langchain.retrievers import BM25Retriever, EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
+from langchain_classic.retrievers import EnsembleRetriever
 from langchain_core.documents import Document
 
 from utils import tokenize_japanese
