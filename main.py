@@ -11,7 +11,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from constants import (
     DEFAULT_DATA_FOLDER, DEFAULT_K, DEFAULT_BM25_WEIGHT, DEFAULT_VECTOR_WEIGHT,
-    DEFAULT_LLM_MODEL, MAX_CONVERSATION_HISTORY
+    DEFAULT_LLM_MODEL, MAX_CONVERSATION_HISTORY, DEFAULT_JUDGE_MODEL
 )
 from initialize import initialize_system
 from retriever import search_with_scores, update_retriever_weights, update_retriever_k
@@ -20,6 +20,10 @@ from logger import log_query
 from components import (
     render_citation, render_danger_banner, render_security_notice,
     render_chat_message
+)
+from judge import (
+    load_eval_dataset, run_evaluation_suite, save_evaluation_results,
+    format_evaluation_summary
 )
 
 # 環境変数読み込み
@@ -66,6 +70,12 @@ if 'index_count' not in st.session_state:
 if 'session_id' not in st.session_state:
     import uuid
     st.session_state.session_id = str(uuid.uuid4())
+
+if 'eval_running' not in st.session_state:
+    st.session_state.eval_running = False
+
+if 'eval_results' not in st.session_state:
+    st.session_state.eval_results = None
 
 
 def handle_query(user_query: str, session_state: Dict) -> Dict:
@@ -276,6 +286,23 @@ def render_sidebar():
         else:
             st.info("インデックスが構築されていません。再構築ボタンを押してください。")
 
+        # 評価実行セクション
+        st.divider()
+        st.subheader("🧪 評価実行")
+        st.caption("LLM as a Judgeで回答品質を評価します（コストがかかります）")
+
+        if st.button("📊 評価を実行", type="secondary", disabled=st.session_state.hybrid_retriever is None):
+            st.session_state.eval_running = True
+
+        # 評価結果の表示
+        if st.session_state.eval_results is not None:
+            summary = st.session_state.eval_results['summary']
+            if summary['mvp_passed']:
+                st.success(f"✅ MVP合格 ({summary['average_score']:.1f}点)")
+            else:
+                st.warning(f"❌ MVP不合格 ({summary['average_score']:.1f}点)")
+            st.write(f"合格: {summary['passed_questions']}/{summary['total_questions']}問")
+
 
 def main():
     """メイン関数"""
@@ -314,7 +341,68 @@ def main():
                 else:
                     st.error("データフォルダにファイルが見つかりませんでした。")
         return
-    
+
+    # 評価実行処理
+    if st.session_state.eval_running:
+        st.session_state.eval_running = False  # フラグをリセット
+
+        with st.spinner("評価を実行中... これには数分かかる場合があります"):
+            try:
+                # 評価データセット読み込み
+                eval_dataset = load_eval_dataset()
+
+                # 評価実行
+                eval_results = run_evaluation_suite(
+                    eval_dataset=eval_dataset,
+                    answer_generator_func=handle_query,
+                    session_state=st.session_state,
+                    model=DEFAULT_JUDGE_MODEL
+                )
+
+                # 結果を保存
+                saved_path = save_evaluation_results(eval_results)
+
+                # セッション状態に保存
+                st.session_state.eval_results = eval_results
+
+                # 成功メッセージ
+                st.success(f"評価完了！結果を {saved_path} に保存しました")
+
+                # サマリーを表示
+                st.markdown(format_evaluation_summary(eval_results['summary']))
+
+                # 詳細結果を表示
+                with st.expander("📋 詳細結果を見る"):
+                    for result in eval_results['results']:
+                        q_id = result['question_id']
+                        category = result['category']
+                        question = result['question']
+                        eval_data = result['evaluation']
+
+                        # 問題ごとの結果
+                        passed_icon = "✅" if eval_data['passed'] else "❌"
+                        st.markdown(f"### {passed_icon} 問題 {q_id} ({category}) - {eval_data['average_score']:.1f}点")
+                        st.markdown(f"**質問**: {question}")
+
+                        # スコア表示
+                        st.markdown("**スコア**:")
+                        cols = st.columns(3)
+                        scores = eval_data['scores']
+                        for i, (criteria, score) in enumerate(scores.items()):
+                            col_idx = i % 3
+                            cols[col_idx].metric(criteria, f"{score}点")
+
+                        # 総合コメント
+                        st.markdown(f"**総合コメント**: {eval_data['overall_comment']}")
+                        st.divider()
+
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"評価中にエラーが発生しました: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
     # 会話履歴表示
     for message in st.session_state.messages:
         render_chat_message(

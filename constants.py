@@ -20,6 +20,7 @@ DANGEROUS_KEYWORDS = [
 # LLM設定
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_JUDGE_MODEL = "gpt-4o-mini"  # Judge用モデル
 
 # パス
 DEFAULT_DATA_FOLDER = "./data"
@@ -34,5 +35,17 @@ TOKEN_PRICES = {
         "completion": 0.600
     }
 }
+
+# Judge評価設定
+JUDGE_EVALUATION_CRITERIA = [
+    "根拠性",
+    "正確性",
+    "網羅性",
+    "安全性",
+    "引用明示",
+    "簡潔性"
+]
+JUDGE_PASS_THRESHOLD = 70.0  # 合格ライン（平均70点以上）
+JUDGE_PASS_RATE = 0.7  # MVP合格率（10問中7問以上）
 
 
