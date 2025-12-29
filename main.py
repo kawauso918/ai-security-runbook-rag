@@ -15,11 +15,7 @@ from constants import (
 )
 from initialize import initialize_system
 from retriever import search_with_scores, update_retriever_weights, update_retriever_k
-from guardrails import (
-    detect_dangerous_operations, check_insufficient_evidence,
-    detect_ambiguous_query, get_insufficient_evidence_response,
-    get_ambiguous_query_response
-)
+from guardrails import apply_guardrails
 from logger import log_query
 from components import (
     render_citation, render_danger_banner, render_security_notice,
@@ -95,39 +91,23 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
         k=session_state['k']
     )
     
-    # 根拠不足判定
-    insufficient_evidence = check_insufficient_evidence(search_results)
-    if insufficient_evidence:
-        answer = get_insufficient_evidence_response()
-        processing_time = time.time() - start_time
-        
-        return {
-            'answer': answer,
-            'citations': [],
-            'flags': {
-                'insufficient_evidence': True,
-                'dangerous_operation': False,
-                'ambiguous_query': False
-            },
-            'processing_time': processing_time,
-            'token_usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
-            'cost': 0.0
-        }
+    # ガードレール適用（検索後、LLM呼び出し前）
+    guardrail_result = apply_guardrails(
+        query=user_query,
+        search_results=search_results,
+        answer=None  # まだ回答は生成していない
+    )
     
-    # 曖昧質問検知
-    ambiguous = detect_ambiguous_query(user_query)
-    if ambiguous:
-        answer = get_ambiguous_query_response()
+    # 根拠不足または曖昧質問の場合は、ここで終了
+    if not guardrail_result['should_respond']:
         processing_time = time.time() - start_time
         
         return {
-            'answer': answer,
-            'citations': search_results[:session_state['k']],
-            'flags': {
-                'insufficient_evidence': False,
-                'dangerous_operation': False,
-                'ambiguous_query': True
-            },
+            'answer': guardrail_result['answer'],
+            'citations': guardrail_result['citations'],
+            'flags': guardrail_result['flags'],
+            'warning_reason': guardrail_result['warning_reason'],
+            'top_score': guardrail_result['top_score'],
             'processing_time': processing_time,
             'token_usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
             'cost': 0.0
@@ -187,8 +167,12 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
     response = llm.invoke(prompt)
     answer = response.content.strip()
     
-    # 危険操作検知
-    dangerous = detect_dangerous_operations(user_query, answer)
+    # ガードレール適用（回答生成後、危険操作検知）
+    guardrail_result = apply_guardrails(
+        query=user_query,
+        search_results=search_results,
+        answer=answer  # 生成した回答をチェック
+    )
     
     # トークン使用量とコスト計算
     from utils import calculate_cost
@@ -215,13 +199,11 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
     processing_time = time.time() - start_time
     
     return {
-        'answer': answer,
-        'citations': search_results[:session_state['k']],
-        'flags': {
-            'insufficient_evidence': False,
-            'dangerous_operation': dangerous,
-            'ambiguous_query': False
-        },
+        'answer': guardrail_result['answer'],
+        'citations': guardrail_result['citations'],
+        'flags': guardrail_result['flags'],
+        'warning_reason': guardrail_result['warning_reason'],
+        'top_score': guardrail_result['top_score'],
         'processing_time': processing_time,
         'token_usage': token_usage,
         'cost': cost
@@ -340,11 +322,9 @@ def main():
             content=message['content'],
             citations=message.get('citations', [])
         )
-    
-    # 危険操作警告（最後の回答が危険操作を含む場合）
-    if st.session_state.messages:
-        last_message = st.session_state.messages[-1]
-        if last_message.get('flags', {}).get('dangerous_operation', False):
+        
+        # 危険操作警告バナー（各メッセージごとに表示）
+        if message.get('flags', {}).get('dangerous_operation', False):
             render_danger_banner()
     
     # 質問入力
@@ -360,24 +340,20 @@ def main():
         with st.spinner("回答を生成中..."):
             result = handle_query(prompt, st.session_state)
             
-            # 危険操作検知時は警告を追加
-            answer = result['answer']
-            if result['flags']['dangerous_operation']:
-                answer = "⚠️ **承認・確認が必要**\n\n" + answer
-            
-            # アシスタントメッセージを追加
+            # アシスタントメッセージを追加（警告は既にapply_guardrailsで追加済み）
             st.session_state.messages.append({
                 'role': 'assistant',
-                'content': answer,
+                'content': result['answer'],
                 'citations': result['citations'],
-                'flags': result['flags']
+                'flags': result['flags'],
+                'warning_reason': result.get('warning_reason')
             })
             
             # ログ記録
             log_query(
                 query=prompt,
                 search_results=result['citations'],
-                answer=answer,
+                answer=result['answer'],
                 processing_time=result['processing_time'],
                 token_usage=result['token_usage'],
                 cost=result['cost'],
@@ -387,6 +363,8 @@ def main():
                     'vector_weight': st.session_state.vector_weight
                 },
                 flags=result['flags'],
+                warning_reason=result.get('warning_reason'),
+                top_score=result.get('top_score', 0.0),
                 session_id=st.session_state.session_id
             )
         

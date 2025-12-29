@@ -18,9 +18,25 @@ def log_query(
     cost: float,
     search_config: Dict,
     flags: Dict,
+    warning_reason: str = None,
+    top_score: float = None,
     session_id: str = None
 ) -> None:
-    """クエリログをJSONL形式で記録"""
+    """クエリログをJSONL形式で記録
+    
+    Args:
+        query: ユーザーの質問
+        search_results: 検索結果のリスト
+        answer: 生成された回答
+        processing_time: 処理時間（秒）
+        token_usage: トークン使用量
+        cost: コスト（USD）
+        search_config: 検索設定
+        flags: フラグ（insufficient_evidence, dangerous_operation, ambiguous_query）
+        warning_reason: 警告理由（'insufficient_evidence', 'dangerous_operation', 'ambiguous_query', None）
+        top_score: 検索結果の最高スコア
+        session_id: セッションID
+    """
     
     # ログフォルダが存在しない場合は作成
     log_dir = Path(LOGS_FOLDER)
@@ -43,8 +59,9 @@ def log_query(
             'excerpt': result.get('text', '')[:200]  # 最初の200文字
         })
     
-    # トップスコア取得
-    top_score = max([r.get('score', 0.0) for r in search_results]) if search_results else 0.0
+    # トップスコア取得（引数で指定されていない場合は計算）
+    if top_score is None:
+        top_score = max([r.get('score', 0.0) for r in search_results]) if search_results else 0.0
 
     # ログエントリを作成
     log_entry = {
@@ -63,7 +80,8 @@ def log_query(
         'latency_ms': int(processing_time * 1000),  # ミリ秒に変換
         'tokens': token_usage,
         'cost': cost,
-        'flags': flags
+        'flags': flags,
+        'warning_reason': warning_reason  # 警告理由を追加
     }
     
     # JSONL形式で追記
@@ -72,4 +90,5 @@ def log_query(
             f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
     except Exception as e:
         print(f"Error writing log: {e}")
+
 

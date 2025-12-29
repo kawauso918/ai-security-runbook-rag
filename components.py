@@ -28,7 +28,7 @@ def render_citation(citation: Dict) -> str:
 
 def render_danger_banner() -> None:
     """危険操作警告バナー表示"""
-    st.warning("⚠️ 承認・確認が必要", icon="⚠️")
+    st.warning("⚠️ この操作は承認・確認が必要です", icon="⚠️")
 
 
 def render_security_notice() -> None:
@@ -50,4 +50,5 @@ def render_chat_message(role: str, content: str, citations: List[Dict] = None) -
                 st.markdown("### 引用元")
                 for citation in citations:
                     st.markdown(render_citation(citation), unsafe_allow_html=True)
+
 

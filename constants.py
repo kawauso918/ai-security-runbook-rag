@@ -12,8 +12,8 @@ MAX_CONVERSATION_HISTORY = 5
 # 危険操作キーワード
 DANGEROUS_KEYWORDS = [
     '削除', 'delete', 'rm -rf', 'drop', 'truncate',
-    '証跡', '消去', 'format', 'reset', 'purge',
-    'disable', 'shutdown', 'kill', '停止', '無効化',
+    '証跡', '消去', 'フォーマット', 'format', '初期化', 'reset', 'purge',
+    '無効化', 'disable', '停止', 'shutdown', 'kill',
     'clear', 'remove', 'erase', 'wipe'
 ]
 
@@ -34,4 +34,5 @@ TOKEN_PRICES = {
         "completion": 0.600
     }
 }
+
 
