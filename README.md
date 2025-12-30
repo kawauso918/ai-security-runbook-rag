@@ -16,7 +16,9 @@
 - ⚠️ 危険操作を検知して警告
 
 **特徴:**
-- ハイブリッド検索（BM25 + ベクトル検索）で高精度な情報取得
+- ハイブリッド検索（BM25 + ベクトル検索）+ Re-rankingで高精度な情報取得
+- OCR対応でスキャンPDFからもテキスト抽出可能
+- 適応的チャンキングでドキュメントタイプ別に最適化
 - 根拠不足の場合は固定応答で誤情報を防止
 - 監査用ログ記録・評価機能を搭載
 
@@ -50,11 +52,26 @@
 - 文脈を考慮した回答が可能
 - トークン数の爆発を防止
 
-### 7. ログ記録・評価
+### 7. Re-ranking（検索精度向上）
+- **Cohere Rerank API**: 多言語対応の高精度Re-ranking
+- **LLMベースRe-ranking**: OpenAI GPT-4o-miniによる意味的関連性評価
+- キーワードマッチの誤検出を削減し、意味的に関連性の高い結果を上位に配置
+
+### 8. OCR対応（スキャンPDF対応）
+- **Tesseract OCR**: ローカル実行、無料、OSS
+- **Azure Document Intelligence**: クラウド、高精度（オプション）
+- スキャン画像のみのPDFからもテキストを抽出可能
+
+### 9. 適応的チャンキング
+- ドキュメントタイプ別チャンクサイズ最適化（PDF: 800, Markdown: 600, Text: 400）
+- コンテンツ密度による動的調整（疎なコンテンツは大きく、密なコンテンツは小さく）
+- セマンティック境界（段落・文）での分割優先
+
+### 10. ログ記録・評価
 - **ログ記録**: JSONL形式で質問・回答・スコア・コストを記録
 - **LLM as a Judge評価**: 回答品質を自動評価（根拠性・正確性・網羅性など）
 
-### 8. ファイルアップロード機能
+### 11. ファイルアップロード機能
 - ブラウザから直接PDF/Markdown/テキストをアップロード
 - 複数ファイル一括アップロード対応
 - アップロード後、自動的にインデックスを構築
@@ -73,8 +90,10 @@
 - **RAGフレームワーク**: LangChain
 - **ベクトルDB**: ChromaDB
 - **検索**: BM25 (rank-bm25) + ベクトル検索
+- **Re-ranking**: Cohere Rerank API / LLMベース（OpenAI gpt-4o-mini）
+- **OCR**: Tesseract OCR / Azure Document Intelligence
 - **LLM**: OpenAI API (gpt-4o-mini)
-- **Embeddings**: OpenAI Embeddings (text-embedding-ada-002)
+- **Embeddings**: OpenAI Embeddings (text-embedding-3-small)
 - **日本語処理**: Sudachi
 
 ## 📦 セットアップ（ローカル環境）
@@ -108,7 +127,7 @@ python -c "import sudachipy; sudachipy.Dictionary().create()"
 
 ### 4. 環境変数の設定
 
-`.env.example`をコピーして`.env`を作成し、OpenAI APIキーを設定：
+`.env.example`をコピーして`.env`を作成し、APIキーを設定：
 
 ```bash
 cp .env.example .env
@@ -116,8 +135,21 @@ cp .env.example .env
 
 `.env`ファイルを編集：
 ```env
+# 必須
 OPENAI_API_KEY=your_openai_api_key_here
+
+# Re-ranking使用時（オプション）
+COHERE_API_KEY=your_cohere_api_key_here
+
+# Azure OCR使用時（オプション）
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+AZURE_DOCUMENT_INTELLIGENCE_KEY=your_azure_api_key_here
 ```
+
+**注意**:
+- `OPENAI_API_KEY`は必須です
+- Re-ranking機能を使う場合は`COHERE_API_KEY`を設定（LLMベースも選択可）
+- Azure OCRを使う場合はAzureの設定を追加（Tesseract OCRは無料で利用可）
 
 ### 5. アプリケーションの起動
 
@@ -150,6 +182,8 @@ streamlit run main.py
 - **BM25重み**: BM25検索の重み（デフォルト: 0.6）
 - **ベクトル重み**: ベクトル検索の重み（自動計算: 1.0 - BM25重み）
 - **外部検索**: 手順書に該当情報がない場合に外部検索を許可
+- **Re-ranking**: 検索結果の再ランキングを有効化（Cohere/LLM選択可能）
+- **OCR処理**: スキャンPDFからのテキスト抽出を有効化（Tesseract/Azure選択可能）
 
 ## 📁 データの扱い
 
@@ -177,85 +211,84 @@ streamlit run main.py
 
 ### 現在の制約
 
-- **OCR未対応**: スキャン画像のみのPDFはテキスト抽出できません
+- **OCR精度**: スキャン品質が低い場合、OCR精度が低下する可能性があります
 - **パスワード保護PDF**: 読み込めません
 - **大容量ファイル**: 数百MBを超えるファイルは処理に時間がかかります
 - **言語**: 主に日本語に最適化（Sudachi使用）
+- **OCR処理時間**: スキャンPDFのOCR処理には1ページあたり2-5秒程度かかります
 
 ### トラブルシューティング
 
 詳細は[トラブルシューティング](#トラブルシューティング)セクションを参照してください。
 
-## 🔮 今後の拡張案
+## 🔮 実装済み機能と今後の拡張案
 
-> 📘 **詳細な実装計画**: [SHORT_TERM_EXTENSIONS.md](./SHORT_TERM_EXTENSIONS.md) を参照
+> 📘 **詳細な実装ドキュメント**:
+> - [SHORT_TERM_EXTENSIONS.md](./SHORT_TERM_EXTENSIONS.md) - OCR・Re-ranking設計書
+> - [IMPLEMENTATION_COMPLETE.md](./IMPLEMENTATION_COMPLETE.md) - 実装完了レポート
+> - [RERANKING_EVALUATION_REPORT.md](./RERANKING_EVALUATION_REPORT.md) - Re-ranking評価レポート
 
-### 短期的な改善（実装計画あり）
+### ✅ 実装済み機能
 
 #### 1. OCR対応（スキャンPDF対応）
 
-**現状の課題**: スキャン画像のみのPDFからテキスト抽出ができない
+**実装状況**: ✅ **完全実装済み（UI統合完了）**
 
-**実装方式**:
-- **優先**: Tesseract OCR（ローカル、無料、OSS）
-- **代替**: Azure Document Intelligence（クラウド、有料、高精度）
+**対応OCR手法**:
+- **Tesseract OCR**: ローカル、無料、OSS
+- **Azure Document Intelligence**: クラウド、有料、高精度
 
-**主な関数**:
-- `ocr_extract_text_from_pdf()`: PDFから画像抽出→OCR処理
-- `pdf_to_sections_with_ocr()`: 既存パイプラインへの統合
+**使い方**:
+1. サイドバー「📷 OCR処理」から「OCR処理を有効化」
+2. OCR手法選択（tesseract/azure）
+3. 言語選択（jpn/eng/jpn+eng）
+4. インデックス再構築
 
-**セットアップ**:
+**セットアップ**（Tesseract使用時）:
 ```bash
-# Tesseract OCR
-sudo apt install tesseract-ocr tesseract-ocr-jpn  # Ubuntu
-brew install tesseract tesseract-lang             # macOS
-pip install pytesseract pdf2image pillow
+# macOS
+brew install tesseract tesseract-lang poppler
 
-# または Azure Document Intelligence
-pip install azure-ai-formrecognizer
-# .env に AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT と KEY を設定
+# Ubuntu/Debian
+sudo apt install tesseract-ocr tesseract-ocr-jpn poppler-utils
 ```
-
-**タスク分割**: 12タスク（OCR-1〜OCR-12）、詳細は[SHORT_TERM_EXTENSIONS.md](./SHORT_TERM_EXTENSIONS.md#15-タスク分割)参照
 
 ---
 
 #### 2. Re-ranking（検索精度向上）
 
-**現状の課題**: ハイブリッド検索の結果が、キーワードマッチで無関係な結果を含む場合がある
+**実装状況**: ✅ **完全実装済み（UI統合完了、評価実施済み）**
 
-**実装方式**:
-- **優先**: Cohere Rerank API（多言語対応、月1,000件無料）
-- **代替**: LLMベースReranking（OpenAI gpt-4o-mini）
+**対応Re-ranking手法**:
+- **Cohere Rerank API**: rerank-multilingual-v3.0（多言語対応、月1,000件無料）
+- **LLMベースReranking**: OpenAI gpt-4o-mini
 
-**主な関数**:
-- `rerank_search_results()`: 検索結果を再ランキング
-- `_rerank_with_cohere()`: Cohere Rerank API実行
-- `_rerank_with_llm()`: LLMベースReranking実行
+**使い方**:
+1. サイドバー「🔀 Re-ranking」から「Re-rankingを有効化」
+2. Re-ranking手法選択（cohere/llm）
+3. Re-ranking前の取得数設定（デフォルト: 10）
 
-**セットアップ**:
+**セットアップ**（Cohere使用時）:
 ```bash
-# Cohere Rerank API
-pip install cohere
 # .env に COHERE_API_KEY を設定
+COHERE_API_KEY=your_cohere_api_key_here
 ```
 
-**タスク分割**: 11タスク（RR-1〜RR-11）、詳細は[SHORT_TERM_EXTENSIONS.md](./SHORT_TERM_EXTENSIONS.md#25-タスク分割)参照
-
-**期待される効果**:
-- 検索精度向上（LLM as a Judge評価で+5点以上）
-- 無関係な結果の除外
-- ユーザー満足度向上
+**評価結果**:
+- 偽陽性の削減を確認
+- 意味的関連性の向上
+- 詳細: [RERANKING_EVALUATION_REPORT.md](./RERANKING_EVALUATION_REPORT.md)
 
 ---
 
-#### 3. チャンクサイズ最適化
+#### 3. 適応的チャンキング
 
-**実装状況**: ✅ 実装済み（適応的チャンキング）
+**実装状況**: ✅ **実装済み**
 
+**特徴**:
 - ドキュメントタイプ別チャンクサイズ（PDF: 800, Markdown: 600, Text: 400）
 - コンテンツ密度に基づく動的調整
-- セマンティック境界での分割
+- セマンティック境界（段落・文）での分割優先
 
 ### 中期的な改善
 
@@ -316,31 +349,38 @@ cat logs/query_2024-12-29.jsonl | jq .
 
 ```
 ai-security-runbook-rag/
-├── main.py              # Streamlitメインアプリ
-├── initialize.py        # インデックス構築
-├── retriever.py         # ハイブリッド検索
-├── guardrails.py        # ガードレール（危険操作検知等）
-├── logger.py            # ログ記録
-├── components.py        # UIコンポーネント
-├── utils.py             # ユーティリティ関数
-├── constants.py         # 定数定義
-├── error_handler.py     # エラーハンドリング
-├── judge.py             # 評価処理
-├── requirements.txt     # 依存パッケージ
-├── runtime.txt          # Python バージョン指定
-├── .env.example         # 環境変数テンプレート
+├── main.py                          # Streamlitメインアプリ
+├── initialize.py                    # インデックス構築（OCR対応）
+├── retriever.py                     # ハイブリッド検索 + Re-ranking
+├── guardrails.py                    # ガードレール（危険操作検知等）
+├── logger.py                        # ログ記録（Re-rankスコア含む）
+├── components.py                    # UIコンポーネント
+├── utils.py                         # ユーティリティ関数（OCR含む）
+├── constants.py                     # 定数定義
+├── error_handler.py                 # エラーハンドリング
+├── judge.py                         # 評価処理
+├── requirements.txt                 # 依存パッケージ
+├── runtime.txt                      # Python バージョン指定
+├── .env.example                     # 環境変数テンプレート
 ├── .gitignore
-├── .gitattributes       # Git LFS設定
-├── data/                # 手順書ファイル格納フォルダ
-│   ├── README.md        # データ管理ガイド
+├── .gitattributes                   # Git LFS設定
+├── README.md                        # 本ファイル
+├── SHORT_TERM_EXTENSIONS.md         # OCR・Re-ranking設計書
+├── IMPLEMENTATION_COMPLETE.md       # 実装完了レポート
+├── RERANKING_IMPLEMENTATION.md      # Re-ranking実装レポート
+├── RERANKING_EVALUATION_REPORT.md   # Re-ranking評価レポート
+├── data/                            # 手順書ファイル格納フォルダ
+│   ├── README.md                    # データ管理ガイド
 │   ├── sample_manual.md
 │   └── incident_response.md
-├── logs/                # ログファイル（JSONL形式）
+├── logs/                            # ログファイル（JSONL形式）
 │   └── query_YYYY-MM-DD.jsonl
-├── eval/                # 評価データ
+├── eval/                            # 評価データ
 │   ├── eval_dataset.json
+│   ├── compare_reranking.py         # Re-ranking比較スクリプト
+│   ├── rerank_comparison_data.json  # Re-ranking評価結果
 │   └── evaluation_results_YYYY-MM-DD.json
-└── chroma_db/           # ChromaDBデータ（自動生成）
+└── chroma_db/                       # ChromaDBデータ（自動生成）
 ```
 
 ## 🔧 トラブルシューティング
@@ -361,8 +401,11 @@ ai-security-runbook-rag/
 **対応**:
 1. PDFファイルが破損していないか確認
 2. パスワード保護されていないか確認
-3. テキスト抽出可能なPDFか確認（スキャン画像のみのPDFは非対応）
-4. Markdown形式に変換して再試行
+3. スキャン画像のみのPDFの場合：
+   - サイドバーから「OCR処理を有効化」
+   - Tesseract OCRを選択（無料）
+   - インデックス再構築を実行
+4. それでも読めない場合はMarkdown形式に変換して再試行
 
 ### インデックスが構築されていない場合
 
