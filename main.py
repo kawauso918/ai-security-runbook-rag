@@ -13,7 +13,7 @@ from constants import (
     DEFAULT_DATA_FOLDER, DEFAULT_K, DEFAULT_BM25_WEIGHT, DEFAULT_VECTOR_WEIGHT,
     DEFAULT_LLM_MODEL, MAX_CONVERSATION_HISTORY, DEFAULT_JUDGE_MODEL,
     DEFAULT_EXTERNAL_SEARCH_ENABLED, DEFAULT_EXTERNAL_SEARCH_MAX_RESULTS,
-    DEFAULT_EXTERNAL_SEARCH_TIMEOUT_SEC
+    DEFAULT_EXTERNAL_SEARCH_TIMEOUT_SEC, OCR_ENABLED, OCR_METHOD, OCR_LANGUAGE
 )
 from initialize import initialize_system
 from retriever import (
@@ -97,6 +97,16 @@ if 'eval_running' not in st.session_state:
 if 'eval_results' not in st.session_state:
     st.session_state.eval_results = None
 
+# OCR設定
+if 'ocr_enabled' not in st.session_state:
+    st.session_state.ocr_enabled = OCR_ENABLED
+
+if 'ocr_method' not in st.session_state:
+    st.session_state.ocr_method = OCR_METHOD
+
+if 'ocr_language' not in st.session_state:
+    st.session_state.ocr_language = OCR_LANGUAGE
+
 
 def handle_query(user_query: str, session_state: Dict) -> Dict:
     """質問処理のオーケストレーション"""
@@ -119,13 +129,34 @@ def handle_query(user_query: str, session_state: Dict) -> Dict:
 
     # 検索実行
     try:
+        # Re-rankingが有効な場合は、より多くの結果を取得
+        k_before_rerank = session_state.get('rerank_top_k_before', 10) \
+            if session_state.get('rerank_enabled', False) \
+            else session_state['k']
+
         search_results = search_with_scores(
             ensemble_retriever=session_state['hybrid_retriever'],
             query=user_query,
-            k=session_state['k']
+            k=k_before_rerank
         )
     except Exception as e:
         raise APIError(f"検索処理エラー: {e}")
+
+    # Re-ranking適用
+    if session_state.get('rerank_enabled', False) and search_results:
+        from retriever import rerank_search_results
+        try:
+            search_results = rerank_search_results(
+                query=user_query,
+                search_results=search_results,
+                k=session_state['k'],
+                method=session_state.get('rerank_method', 'cohere'),
+                model=session_state.get('rerank_llm_model', None)
+            )
+        except Exception as e:
+            # Re-ranking失敗時は元の結果を使用（ログに記録）
+            print(f"Re-ranking失敗（元の結果を使用）: {e}")
+            search_results = search_results[:session_state['k']]
 
     # 検索結果が空の場合は簡易キーワード検索で補完
     if not search_results:
@@ -383,6 +414,74 @@ def render_sidebar():
 
         st.divider()
 
+        # Re-ranking設定
+        st.subheader("🔀 Re-ranking")
+        rerank_enabled = st.checkbox(
+            "Re-rankingを有効化",
+            value=st.session_state.get('rerank_enabled', False),
+            help="検索結果を再ランキングして精度を向上させます（Cohere API必要）"
+        )
+        st.session_state.rerank_enabled = rerank_enabled
+
+        if rerank_enabled:
+            rerank_method = st.selectbox(
+                "Re-ranking手法",
+                options=["cohere", "llm", "none"],
+                index=0,
+                help="Cohere（推奨）またはLLMベース"
+            )
+            st.session_state.rerank_method = rerank_method
+
+            if rerank_method != "none":
+                rerank_top_k_before = st.number_input(
+                    "Re-ranking前の取得数",
+                    min_value=st.session_state.k + 1,
+                    max_value=30,
+                    value=st.session_state.get('rerank_top_k_before', 10),
+                    help="Re-ranking前に取得する結果数（最終的にk件に絞り込まれます）"
+                )
+                st.session_state.rerank_top_k_before = int(rerank_top_k_before)
+
+            if rerank_method == "cohere":
+                st.info("💡 Cohere APIキーを.envに設定してください：COHERE_API_KEY")
+            elif rerank_method == "llm":
+                st.info("💡 LLMベースReranking（OpenAI gpt-4o-mini）を使用します")
+
+        st.divider()
+
+        # OCR設定
+        st.subheader("📷 OCR処理（スキャンPDF対応）")
+        ocr_enabled = st.checkbox(
+            "OCR処理を有効化",
+            value=st.session_state.ocr_enabled,
+            help="スキャンPDFからテキストを抽出します（Tesseract OCRまたはAzure必要）"
+        )
+        st.session_state.ocr_enabled = ocr_enabled
+
+        if ocr_enabled:
+            ocr_method = st.selectbox(
+                "OCR手法",
+                options=["tesseract", "azure"],
+                index=0 if st.session_state.ocr_method == "tesseract" else 1,
+                help="Tesseract（無料・ローカル）またはAzure Document Intelligence（有料・高精度）"
+            )
+            st.session_state.ocr_method = ocr_method
+
+            ocr_language = st.selectbox(
+                "OCR言語",
+                options=["jpn", "eng", "jpn+eng"],
+                index=0 if st.session_state.ocr_language == "jpn" else (1 if st.session_state.ocr_language == "eng" else 2),
+                help="認識する言語を選択"
+            )
+            st.session_state.ocr_language = ocr_language
+
+            if ocr_method == "tesseract":
+                st.info("💡 Tesseract OCRのインストールが必要です：\n```bash\n# macOS\nbrew install tesseract tesseract-lang poppler\n\n# Ubuntu/Debian\nsudo apt install tesseract-ocr tesseract-ocr-jpn poppler-utils\n```")
+            elif ocr_method == "azure":
+                st.info("💡 Azure APIキーを.envに設定してください：\nAZURE_DOCUMENT_INTELLIGENCE_ENDPOINT\nAZURE_DOCUMENT_INTELLIGENCE_KEY")
+
+        st.divider()
+
         # ファイルアップロードセクション
         st.subheader("📤 手順書アップロード")
         uploaded_files = st.file_uploader(
@@ -456,7 +555,10 @@ def render_sidebar():
                             st.session_state.data_folder,
                             bm25_weight=st.session_state.bm25_weight,
                             vector_weight=st.session_state.vector_weight,
-                            k=st.session_state.k
+                            k=st.session_state.k,
+                            ocr_enabled=st.session_state.ocr_enabled,
+                            ocr_method=st.session_state.ocr_method,
+                            ocr_language=st.session_state.ocr_language
                         )
 
                         rebuild_status.text("🔍 チャンキング中...")
@@ -505,9 +607,12 @@ def render_sidebar():
                     st.session_state.data_folder,
                     bm25_weight=st.session_state.bm25_weight,
                     vector_weight=st.session_state.vector_weight,
-                    k=st.session_state.k
+                    k=st.session_state.k,
+                    ocr_enabled=st.session_state.ocr_enabled,
+                    ocr_method=st.session_state.ocr_method,
+                    ocr_language=st.session_state.ocr_language
                 )
-                
+
                 status_text.text("🔍 チャンキング中...")
                 progress_bar.progress(50)
                 
@@ -597,7 +702,10 @@ def main():
                     st.session_state.data_folder,
                     bm25_weight=st.session_state.bm25_weight,
                     vector_weight=st.session_state.vector_weight,
-                    k=st.session_state.k
+                    k=st.session_state.k,
+                    ocr_enabled=st.session_state.ocr_enabled,
+                    ocr_method=st.session_state.ocr_method,
+                    ocr_language=st.session_state.ocr_language
                 )
                 if result['index_count'] > 0:
                     st.session_state.vectorstore = result['vectorstore']
@@ -742,7 +850,9 @@ def main():
                     search_config={
                         'k': st.session_state.k,
                         'bm25_weight': st.session_state.bm25_weight,
-                        'vector_weight': st.session_state.vector_weight
+                        'vector_weight': st.session_state.vector_weight,
+                        'rerank_enabled': st.session_state.get('rerank_enabled', False),
+                        'rerank_method': st.session_state.get('rerank_method', 'none')
                     },
                     flags=result['flags'],
                     warning_reason=result.get('warning_reason'),

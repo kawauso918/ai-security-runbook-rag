@@ -49,7 +49,7 @@ def log_query(
     # 検索結果をログ用に整形
     log_search_results = []
     for result in search_results:
-        log_search_results.append({
+        log_result = {
             'chunk_id': result.get('chunk_id', ''),
             'score': result.get('score', 0.0),
             'bm25_score': result.get('bm25_score', 0.0),
@@ -57,7 +57,11 @@ def log_query(
             'file': result.get('file', ''),
             'heading': result.get('heading', ''),
             'excerpt': result.get('text', '')[:200]  # 最初の200文字
-        })
+        }
+        # Re-rankingスコアがある場合は記録
+        if 'rerank_score' in result:
+            log_result['rerank_score'] = result.get('rerank_score', 0.0)
+        log_search_results.append(log_result)
     
     # トップスコア取得（引数で指定されていない場合は計算）
     if top_score is None:
@@ -73,6 +77,10 @@ def log_query(
         'weights': {
             'bm25': search_config.get('bm25_weight', 0.0),
             'vector': search_config.get('vector_weight', 0.0)
+        },
+        'rerank': {
+            'enabled': search_config.get('rerank_enabled', False),
+            'method': search_config.get('rerank_method', 'none')
         },
         'top_score': top_score,
         'sources': log_search_results,

@@ -298,3 +298,180 @@ def fallback_keyword_search(
         results.append(result)
 
     return results
+
+
+# ==================== Re-ranking 関数 ====================
+
+def rerank_search_results(
+    query: str,
+    search_results: List[Dict[str, Any]],
+    k: int = 4,
+    method: str = "cohere",
+    model: str = None
+) -> List[Dict[str, Any]]:
+    """検索結果を再ランキング
+
+    Args:
+        query: ユーザーの質問
+        search_results: ハイブリッド検索の結果
+        k: 返却する結果数
+        method: Re-ranking手法（'cohere', 'llm', 'none'）
+        model: LLMモデル名（method='llm'の場合）
+
+    Returns:
+        再ランキング後の検索結果（上位k件）
+        各結果に 'rerank_score' フィールドが追加される
+    """
+    if method == "none" or not search_results:
+        return search_results[:k]
+
+    try:
+        if method == "cohere":
+            reranked_results = _rerank_with_cohere(query, search_results, k)
+        elif method == "llm":
+            reranked_results = _rerank_with_llm(query, search_results, k, model)
+        else:
+            # 不明なメソッドの場合は元の結果を返す
+            return search_results[:k]
+
+        return reranked_results
+    except Exception as e:
+        # Re-ranking失敗時は元の結果を返す（フォールバック）
+        print(f"Re-ranking失敗: {e}")
+        return search_results[:k]
+
+
+def _rerank_with_cohere(
+    query: str,
+    search_results: List[Dict[str, Any]],
+    k: int = 4,
+    api_key: str = None
+) -> List[Dict[str, Any]]:
+    """Cohere Rerank APIで再ランキング
+
+    Args:
+        query: ユーザーの質問
+        search_results: 検索結果
+        k: 返却する結果数
+        api_key: Cohere APIキー（環境変数から取得可能）
+
+    Returns:
+        再ランキング後の検索結果（rerank_scoreを含む）
+    """
+    import os
+
+    try:
+        import cohere
+    except ImportError:
+        raise ImportError(
+            "cohereパッケージがインストールされていません。\n"
+            "インストール方法: pip install cohere"
+        )
+
+    # 環境変数から取得
+    api_key = api_key or os.getenv("COHERE_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "Cohere APIキーが設定されていません。\n"
+            ".envファイルにCOHERE_API_KEYを追加してください。"
+        )
+
+    # Cohere Client
+    co = cohere.Client(api_key)
+
+    # 検索結果のテキストを抽出
+    documents = [result['text'] for result in search_results]
+
+    # Rerank API呼び出し
+    rerank_response = co.rerank(
+        query=query,
+        documents=documents,
+        top_n=min(k, len(documents)),
+        model="rerank-multilingual-v3.0"  # 日本語対応モデル
+    )
+
+    # 結果を再構築
+    reranked_results = []
+    for item in rerank_response.results:
+        result = search_results[item.index].copy()
+        result['rerank_score'] = item.relevance_score
+        reranked_results.append(result)
+
+    return reranked_results
+
+
+def _rerank_with_llm(
+    query: str,
+    search_results: List[Dict[str, Any]],
+    k: int = 4,
+    model: str = None
+) -> List[Dict[str, Any]]:
+    """LLMで再ランキング
+
+    Args:
+        query: ユーザーの質問
+        search_results: 検索結果
+        k: 返却する結果数
+        model: LLMモデル名
+
+    Returns:
+        再ランキング後の検索結果（rerank_scoreを含む）
+    """
+    import json
+    from openai import OpenAI
+    from constants import RERANK_LLM_MODEL
+
+    model = model or RERANK_LLM_MODEL
+
+    client = OpenAI()
+
+    # プロンプト構築
+    prompt = f"""以下の検索結果について、質問との関連性を0-100点で評価してください。
+
+【質問】
+{query}
+
+【検索結果】
+"""
+    for i, result in enumerate(search_results):
+        text_preview = result['text'][:200] + "..." if len(result['text']) > 200 else result['text']
+        prompt += f"\n[結果{i+1}]\n{text_preview}\n"
+
+    prompt += """
+【出力形式】
+JSON形式で各結果のスコアを出力してください。
+{
+    "scores": [85, 70, 45, ...],
+    "reasoning": "評価理由"
+}
+"""
+
+    # LLM呼び出し
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+
+        # スコアを取得
+        result_data = json.loads(response.choices[0].message.content)
+        scores = result_data.get("scores", [])
+
+        # 結果にスコアを付与
+        for i, result in enumerate(search_results):
+            result['rerank_score'] = scores[i] / 100.0 if i < len(scores) else 0.0
+
+        # スコア降順でソート
+        reranked_results = sorted(
+            search_results,
+            key=lambda x: x.get('rerank_score', 0.0),
+            reverse=True
+        )
+
+        return reranked_results[:k]
+
+    except Exception as e:
+        # LLM呼び出し失敗時は元の結果を返す
+        print(f"LLMベースReranking失敗: {e}")
+        return search_results[:k]

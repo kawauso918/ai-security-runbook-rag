@@ -188,11 +188,74 @@ streamlit run main.py
 
 ## 🔮 今後の拡張案
 
-### 短期的な改善
+> 📘 **詳細な実装計画**: [SHORT_TERM_EXTENSIONS.md](./SHORT_TERM_EXTENSIONS.md) を参照
 
-- [ ] **OCR対応**: スキャンPDFからテキスト抽出（Tesseract、Azure Document Intelligence等）
-- [ ] **Re-ranking**: 検索結果の再ランキングで精度向上（Cohere Rerank、LLM-based reranking）
-- [ ] **チャンクサイズ最適化**: ドキュメントタイプに応じた適応的なチャンキング
+### 短期的な改善（実装計画あり）
+
+#### 1. OCR対応（スキャンPDF対応）
+
+**現状の課題**: スキャン画像のみのPDFからテキスト抽出ができない
+
+**実装方式**:
+- **優先**: Tesseract OCR（ローカル、無料、OSS）
+- **代替**: Azure Document Intelligence（クラウド、有料、高精度）
+
+**主な関数**:
+- `ocr_extract_text_from_pdf()`: PDFから画像抽出→OCR処理
+- `pdf_to_sections_with_ocr()`: 既存パイプラインへの統合
+
+**セットアップ**:
+```bash
+# Tesseract OCR
+sudo apt install tesseract-ocr tesseract-ocr-jpn  # Ubuntu
+brew install tesseract tesseract-lang             # macOS
+pip install pytesseract pdf2image pillow
+
+# または Azure Document Intelligence
+pip install azure-ai-formrecognizer
+# .env に AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT と KEY を設定
+```
+
+**タスク分割**: 12タスク（OCR-1〜OCR-12）、詳細は[SHORT_TERM_EXTENSIONS.md](./SHORT_TERM_EXTENSIONS.md#15-タスク分割)参照
+
+---
+
+#### 2. Re-ranking（検索精度向上）
+
+**現状の課題**: ハイブリッド検索の結果が、キーワードマッチで無関係な結果を含む場合がある
+
+**実装方式**:
+- **優先**: Cohere Rerank API（多言語対応、月1,000件無料）
+- **代替**: LLMベースReranking（OpenAI gpt-4o-mini）
+
+**主な関数**:
+- `rerank_search_results()`: 検索結果を再ランキング
+- `_rerank_with_cohere()`: Cohere Rerank API実行
+- `_rerank_with_llm()`: LLMベースReranking実行
+
+**セットアップ**:
+```bash
+# Cohere Rerank API
+pip install cohere
+# .env に COHERE_API_KEY を設定
+```
+
+**タスク分割**: 11タスク（RR-1〜RR-11）、詳細は[SHORT_TERM_EXTENSIONS.md](./SHORT_TERM_EXTENSIONS.md#25-タスク分割)参照
+
+**期待される効果**:
+- 検索精度向上（LLM as a Judge評価で+5点以上）
+- 無関係な結果の除外
+- ユーザー満足度向上
+
+---
+
+#### 3. チャンクサイズ最適化
+
+**実装状況**: ✅ 実装済み（適応的チャンキング）
+
+- ドキュメントタイプ別チャンクサイズ（PDF: 800, Markdown: 600, Text: 400）
+- コンテンツ密度に基づく動的調整
+- セマンティック境界での分割
 
 ### 中期的な改善
 

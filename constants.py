@@ -77,3 +77,39 @@ HEADING_KEYWORDS = [
     "二次対応", "判断基準", "初動", "調査", "報告",
     "対策", "予防", "検知", "通知", "連絡"
 ]
+
+# === 適応的チャンキング設定 ===
+ADAPTIVE_CHUNKING_ENABLED = True
+
+# ドキュメントタイプ別基本チャンクサイズ
+CHUNK_SIZE_PDF = 800
+CHUNK_SIZE_MARKDOWN = 600
+CHUNK_SIZE_TEXT = 400
+
+# チャンクサイズ範囲
+CHUNK_SIZE_MIN = 300
+CHUNK_SIZE_MAX = 1000
+
+# コンテンツ密度閾値
+DENSITY_LOW_THRESHOLD = 0.3   # 疎なコンテンツ（キーワード少）
+DENSITY_HIGH_THRESHOLD = 0.7  # 密なコンテンツ（キーワード多）
+
+# 密度による調整倍率
+DENSITY_LOW_MULTIPLIER = 1.3   # 疎なコンテンツは大きめ
+DENSITY_HIGH_MULTIPLIER = 0.8  # 密なコンテンツは小さめ
+
+# セマンティック境界の重み
+PARAGRAPH_BOUNDARY_WEIGHT = 2.0  # 段落区切り優先
+SENTENCE_BOUNDARY_WEIGHT = 1.5   # 文区切り優先
+
+# === Re-ranking設定 ===
+RERANK_ENABLED = False  # デフォルトではRe-rankingを無効化（オプトイン）
+RERANK_METHOD = "cohere"  # 'cohere', 'llm', 'none'
+RERANK_LLM_MODEL = "gpt-4o-mini"  # LLMベースReranking用モデル
+RERANK_TOP_K_BEFORE = 10  # Re-ranking前に取得する結果数（k' > k）
+
+# === OCR設定 ===
+OCR_ENABLED = False  # デフォルトでOCRを無効化（オプトイン）
+OCR_METHOD = "tesseract"  # 'tesseract' or 'azure'
+OCR_LANGUAGE = "jpn"  # 日本語
+OCR_MIN_TEXT_LENGTH = 100  # この文字数未満の場合OCR処理を試みる

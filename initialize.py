@@ -14,14 +14,25 @@ from constants import (
     DEFAULT_EMBEDDING_MODEL, CHROMA_DB_PATH,
     DEFAULT_BM25_WEIGHT, DEFAULT_VECTOR_WEIGHT, DEFAULT_K
 )
-from utils import chunk_by_headings, pdf_to_sections
+from utils import chunk_by_headings, pdf_to_sections, pdf_to_sections_with_ocr
 from retriever import create_hybrid_retriever
 from error_handler import DataFolderEmptyError, PDFReadError, display_error_summary
 
 
-def load_documents(data_folder: str) -> Tuple[List[Dict], List[tuple[str, Exception]]]:
+def load_documents(
+    data_folder: str,
+    ocr_enabled: bool = False,
+    ocr_method: str = "tesseract",
+    ocr_language: str = "jpn"
+) -> Tuple[List[Dict], List[tuple[str, Exception]]]:
     """データフォルダからPDF/Markdownを読み込み
-    
+
+    Args:
+        data_folder: データフォルダパス
+        ocr_enabled: OCR処理を有効化するか
+        ocr_method: OCR手法（tesseract または azure）
+        ocr_language: OCR言語（jpn, eng, jpn+eng等）
+
     Returns:
         (documents, errors) のタプル
         documents: 読み込み成功したドキュメントのリスト
@@ -66,20 +77,26 @@ def load_documents(data_folder: str) -> Tuple[List[Dict], List[tuple[str, Except
         except Exception as e:
             errors.append((str(txt_file), e))
     
-    # PDFファイルの読み込み（pypdf使用、見出し推定→セクション化）
+    # PDFファイルの読み込み（OCR対応、見出し推定→セクション化）
     try:
         from pypdf import PdfReader
         for pdf_file in data_path.glob("*.pdf"):
             try:
-                # PDFを見出し推定→セクション化
-                pdf_sections = pdf_to_sections(str(pdf_file))
+                # PDFを見出し推定→セクション化（OCR対応）
+                pdf_sections = pdf_to_sections_with_ocr(
+                    pdf_path=str(pdf_file),
+                    ocr_enabled=ocr_enabled,
+                    ocr_method=ocr_method,
+                    ocr_language=ocr_language,
+                    progress_callback=None  # 後で追加
+                )
 
                 # 各セクションをDocumentとして追加
                 for section in pdf_sections:
                     documents.append(section)
 
             except ValueError as e:
-                # テキスト抽出できないPDF（画像のみ）
+                # テキスト抽出できないPDF（画像のみ）かつOCRも失敗
                 error_msg = str(e)
                 errors.append((str(pdf_file), PDFReadError(error_msg)))
             except Exception as e:
@@ -100,22 +117,52 @@ def load_documents(data_folder: str) -> Tuple[List[Dict], List[tuple[str, Except
 def process_documents(
     documents: List[Dict],
     chunk_size: int = DEFAULT_CHUNK_SIZE,
-    overlap: int = DEFAULT_CHUNK_OVERLAP
+    overlap: int = DEFAULT_CHUNK_OVERLAP,
+    adaptive: bool = True
 ) -> List[Dict]:
-    """ドキュメントをチャンキング
-    
+    """ドキュメントをチャンキング（適応的チャンキング対応）
+
     PDF由来のDocumentは既にセクション化されているため、
     セクション内でさらにチャンキングする
+
+    Args:
+        documents: ドキュメントのリスト
+        chunk_size: 基本チャンクサイズ（フォールバック用）
+        overlap: オーバーラップサイズ
+        adaptive: 適応的チャンキングを有効化（デフォルト: True）
+
+    Returns:
+        チャンクのリスト
     """
+    from constants import CHUNK_SIZE_PDF, CHUNK_SIZE_MARKDOWN, CHUNK_SIZE_TEXT
+
     all_chunks = []
-    
+
     for doc in documents:
+        # ファイル拡張子からドキュメントタイプを判定
+        file_path = doc['file_path']
+        if file_path.endswith('.pdf'):
+            doc_type = 'pdf'
+            base_chunk_size = CHUNK_SIZE_PDF if adaptive else chunk_size
+        elif file_path.endswith('.md'):
+            doc_type = 'markdown'
+            base_chunk_size = CHUNK_SIZE_MARKDOWN if adaptive else chunk_size
+        else:
+            doc_type = 'text'
+            base_chunk_size = CHUNK_SIZE_TEXT if adaptive else chunk_size
+
         # PDF由来のDocument（page_start/page_endがある）の場合
         if 'page_start' in doc and 'page_end' in doc:
-            # セクション内でチャンキング
+            # セクション内でチャンキング（適応的チャンキングパラメータを渡す）
             section_text = doc['content']
-            section_chunks = _chunk_text(section_text, chunk_size, overlap)
-            
+            section_chunks = _chunk_text(
+                section_text,
+                base_chunk_size,
+                overlap,
+                adaptive=adaptive,
+                doc_type=doc_type
+            )
+
             for i, chunk_text in enumerate(section_chunks):
                 chunk_id = f"{doc['file_path']}_p{doc['page_start']}-{doc['page_end']}_{i}"
                 chunk = {
@@ -130,15 +177,17 @@ def process_documents(
                 }
                 all_chunks.append(chunk)
         else:
-            # Markdown/TXT由来のDocument（従来通り）
+            # Markdown/TXT由来のDocument（適応的チャンキングパラメータを渡す）
             chunks = chunk_by_headings(
                 doc['content'],
                 doc['file_path'],
-                chunk_size=chunk_size,
-                overlap=overlap
+                chunk_size=base_chunk_size,
+                overlap=overlap,
+                adaptive=adaptive,
+                doc_type=doc_type
             )
             all_chunks.extend(chunks)
-    
+
     return all_chunks
 
 
@@ -288,7 +337,10 @@ def initialize_system(
     overlap: int = DEFAULT_CHUNK_OVERLAP,
     bm25_weight: float = DEFAULT_BM25_WEIGHT,
     vector_weight: float = DEFAULT_VECTOR_WEIGHT,
-    k: int = DEFAULT_K
+    k: int = DEFAULT_K,
+    ocr_enabled: bool = False,
+    ocr_method: str = "tesseract",
+    ocr_language: str = "jpn"
 ) -> Dict:
     """システム全体の初期化
 
@@ -299,6 +351,9 @@ def initialize_system(
         bm25_weight: BM25の重み
         vector_weight: ベクトル検索の重み
         k: デフォルトの検索結果数
+        ocr_enabled: OCR処理を有効化するか
+        ocr_method: OCR手法（tesseract または azure）
+        ocr_language: OCR言語（jpn, eng, jpn+eng等）
 
     Returns:
         初期化結果の辞書
@@ -311,8 +366,13 @@ def initialize_system(
             'errors': List[tuple[str, Exception]]  # エラー情報
         }
     """
-    # ドキュメント読み込み
-    documents, errors = load_documents(data_folder)
+    # ドキュメント読み込み（OCR設定を渡す）
+    documents, errors = load_documents(
+        data_folder,
+        ocr_enabled=ocr_enabled,
+        ocr_method=ocr_method,
+        ocr_language=ocr_language
+    )
 
     if not documents:
         return {

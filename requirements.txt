@@ -20,10 +20,19 @@ openai>=1.0.0
 # Search
 rank-bm25>=0.2.2
 
+# Re-ranking
+cohere>=5.0.0  # Optional: Cohere Rerank API for improved search accuracy
+
 # PDF Processing
 pypdf>=3.17.0
 # Alternative: PyPDF2>=3.0.0
 cryptography>=3.1  # Required for encrypted PDFs
+
+# OCR (Optional - for scanned PDF support)
+pytesseract>=0.3.10  # Tesseract OCR Python wrapper
+pdf2image>=1.16.3  # Convert PDF to images for OCR
+pillow>=10.0.0  # Image processing
+# azure-ai-formrecognizer>=3.3.0  # Optional: Azure Document Intelligence (uncomment if needed)
 
 # Japanese Text Processing
 sudachipy>=0.6.0

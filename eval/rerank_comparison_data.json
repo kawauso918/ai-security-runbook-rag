@@ -1,0 +1,82 @@
+[
+  {
+    "question": "ログインできない場合の対処法を教えてください。",
+    "without_rerank": [
+      {
+        "heading": "データ復旧手順",
+        "score": 1.0,
+        "file": "data/sample_manual.md"
+      },
+      {
+        "heading": "データ漏洩の検知",
+        "score": 0.9,
+        "file": "data/incident_response.md"
+      },
+      {
+        "heading": "方法1: ローカル環境での利用",
+        "score": 0.8,
+        "file": "data/README.md"
+      }
+    ],
+    "with_rerank": [
+      {
+        "heading": "データ復旧手順",
+        "score": 1.0,
+        "rerank_score": 0.0,
+        "file": "data/sample_manual.md"
+      },
+      {
+        "heading": "データ漏洩の検知",
+        "score": 0.9,
+        "rerank_score": 0.0,
+        "file": "data/incident_response.md"
+      },
+      {
+        "heading": "方法1: ローカル環境での利用",
+        "score": 0.8,
+        "rerank_score": 0.0,
+        "file": "data/README.md"
+      }
+    ]
+  },
+  {
+    "question": "システムの停止状況を確認する方法を教えてください。",
+    "without_rerank": [
+      {
+        "heading": "データ漏洩の検知",
+        "score": 1.0,
+        "file": "data/incident_response.md"
+      },
+      {
+        "heading": "データ復旧手順",
+        "score": 0.9,
+        "file": "data/sample_manual.md"
+      },
+      {
+        "heading": "方法1: ローカル環境での利用",
+        "score": 0.8,
+        "file": "data/README.md"
+      }
+    ],
+    "with_rerank": [
+      {
+        "heading": "データ漏洩の検知",
+        "score": 1.0,
+        "rerank_score": 0.2,
+        "file": "data/incident_response.md"
+      },
+      {
+        "heading": "データ漏洩対応",
+        "score": 0.09999999999999998,
+        "rerank_score": 0.15,
+        "file": "data/incident_response.md"
+      },
+      {
+        "heading": "データ復旧手順",
+        "score": 0.9,
+        "rerank_score": 0.1,
+        "file": "data/sample_manual.md"
+      }
+    ]
+  }
+]

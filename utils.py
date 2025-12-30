@@ -37,12 +37,31 @@ def extract_headings(text: str) -> List[Dict]:
     return headings
 
 
-def chunk_by_headings(text: str, file_path: str, chunk_size: int = 500, overlap: int = 50) -> List[Dict]:
-    """見出しベースでチャンキング"""
+def chunk_by_headings(
+    text: str,
+    file_path: str,
+    chunk_size: int = 500,
+    overlap: int = 50,
+    adaptive: bool = True,
+    doc_type: str = 'text'
+) -> List[Dict]:
+    """見出しベースでチャンキング（適応的チャンキング対応）
+
+    Args:
+        text: チャンキング対象テキスト
+        file_path: ファイルパス
+        chunk_size: 基本チャンクサイズ
+        overlap: オーバーラップサイズ
+        adaptive: 適応的チャンキングを有効化（デフォルト: True）
+        doc_type: ドキュメントタイプ（'pdf', 'markdown', 'text'）
+
+    Returns:
+        チャンクのリスト
+    """
     chunks = []
     headings = extract_headings(text)
     lines = text.split('\n')
-    
+
     # 見出しがない場合は全体を1チャンクとして処理
     if not headings:
         chunk_text = '\n'.join(lines)
@@ -56,18 +75,18 @@ def chunk_by_headings(text: str, file_path: str, chunk_size: int = 500, overlap:
                 'chunk_index': 0
             })
         return chunks
-    
+
     # 見出しごとにセクション分割
     for i, heading in enumerate(headings):
         start_line = heading['line_number']
         end_line = headings[i + 1]['line_number'] if i + 1 < len(headings) else len(lines)
-        
+
         section_lines = lines[start_line:end_line]
         section_text = '\n'.join(section_lines)
-        
-        # セクション内でチャンキング
-        section_chunks = _chunk_text(section_text, chunk_size, overlap)
-        
+
+        # セクション内でチャンキング（適応的チャンキングパラメータを渡す）
+        section_chunks = _chunk_text(section_text, chunk_size, overlap, adaptive=adaptive, doc_type=doc_type)
+
         for j, chunk_text in enumerate(section_chunks):
             chunk_id = f"{file_path}_{len(chunks)}"
             chunks.append({
@@ -78,39 +97,213 @@ def chunk_by_headings(text: str, file_path: str, chunk_size: int = 500, overlap:
                 'updated_at': datetime.fromtimestamp(os.path.getmtime(file_path) if os.path.exists(file_path) else 0).isoformat(),
                 'chunk_index': len(chunks)
             })
-    
+
     return chunks
 
 
-def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
-    """テキストを指定サイズでチャンキング"""
+def _chunk_text(
+    text: str,
+    chunk_size: int,
+    overlap: int,
+    adaptive: bool = True,
+    doc_type: str = 'text'
+) -> List[str]:
+    """テキストを指定サイズでチャンキング（適応的チャンキング対応）
+
+    Args:
+        text: チャンキング対象テキスト
+        chunk_size: 基本チャンクサイズ
+        overlap: オーバーラップサイズ
+        adaptive: 適応的チャンキングを有効化（デフォルト: True）
+        doc_type: ドキュメントタイプ（'pdf', 'markdown', 'text'）
+
+    Returns:
+        チャンクのリスト
+    """
     if len(text) <= chunk_size:
         return [text]
-    
+
+    # 適応的チャンキングが有効な場合、密度に基づいてチャンクサイズを調整
+    if adaptive:
+        from constants import ADAPTIVE_CHUNKING_ENABLED
+        if ADAPTIVE_CHUNKING_ENABLED:
+            density = analyze_content_density(text)
+            chunk_size = calculate_adaptive_chunk_size(chunk_size, density, doc_type)
+
     chunks = []
     start = 0
-    
+
     while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end]
-        
-        # オーバーラップ処理
-        if end < len(text) and overlap > 0:
-            # 次のチャンクの開始位置を調整（文の途中で切れないように）
-            next_start = end - overlap
-            # 可能な限り文の区切りで調整
-            for i in range(next_start, end):
-                if text[i] in ['。', '\n', '.', '!', '?']:
-                    next_start = i + 1
-                    break
-        
-        chunks.append(chunk)
-        start = end - overlap if overlap > 0 else end
-        
+        # 仮のチャンク終端位置を計算
+        tentative_end = min(start + chunk_size, len(text))
+
+        # セマンティック境界で切断位置を最適化
+        if tentative_end < len(text):
+            chunk_end = find_semantic_boundary(text, tentative_end, search_range=100)
+        else:
+            chunk_end = len(text)
+
+        # チャンクを抽出
+        chunk = text[start:chunk_end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+        # 次のチャンクの開始位置を計算（オーバーラップを考慮）
+        if chunk_end < len(text) and overlap > 0:
+            # オーバーラップ開始位置を計算
+            overlap_start = max(start, chunk_end - overlap)
+            # セマンティック境界でオーバーラップ開始位置を調整
+            next_start = find_semantic_boundary(text, overlap_start, search_range=50)
+        else:
+            next_start = chunk_end
+
+        start = next_start
+
+        # 無限ループ防止
         if start >= len(text):
             break
-    
+
     return chunks
+
+
+def analyze_content_density(text: str) -> float:
+    """テキストの情報密度を分析
+
+    Args:
+        text: 分析対象テキスト
+
+    Returns:
+        密度スコア（0.0-1.0、高いほど情報が密）
+    """
+    if not text or len(text) < 50:
+        return 0.5  # 短いテキストはデフォルト値
+
+    # Sudachiトークン化
+    tokens = tokenize_japanese(text, preserve_special_tokens=True)
+
+    # 文数を計算
+    sentences = text.count('。') + text.count('.') + text.count('\n')
+    if sentences == 0:
+        sentences = 1
+    avg_sentence_len = len(text) / sentences
+
+    # キーワード密度（文字あたりのトークン数）
+    keyword_density = len(tokens) / len(text)
+
+    # 句読点密度
+    punct_count = sum(1 for c in text if c in '。、.,;:!?「」『』（）()【】[]')
+    punct_density = punct_count / len(text)
+
+    # 技術用語密度（英数字を含むトークン）
+    tech_terms = len([t for t in tokens if any(c.isalnum() for c in t)])
+    tech_density = tech_terms / max(len(tokens), 1)
+
+    # 重み付き平均で密度を計算
+    density = (
+        keyword_density * 0.4 +
+        min(punct_density * 3, 1.0) * 0.3 +
+        tech_density * 0.3
+    )
+
+    return min(max(density, 0.0), 1.0)
+
+
+def calculate_adaptive_chunk_size(
+    base_size: int,
+    density_score: float,
+    doc_type: str
+) -> int:
+    """密度に基づいてチャンクサイズを動的調整
+
+    Args:
+        base_size: ドキュメントタイプ別の基本チャンクサイズ
+        density_score: コンテンツ密度（0.0-1.0）
+        doc_type: ドキュメントタイプ（'pdf', 'markdown', 'text'）
+
+    Returns:
+        調整後のチャンクサイズ（CHUNK_SIZE_MIN～MAX範囲内）
+    """
+    from constants import (
+        DENSITY_LOW_THRESHOLD, DENSITY_HIGH_THRESHOLD,
+        DENSITY_LOW_MULTIPLIER, DENSITY_HIGH_MULTIPLIER,
+        CHUNK_SIZE_MIN, CHUNK_SIZE_MAX
+    )
+
+    # 密度に応じてサイズを調整
+    if density_score < DENSITY_LOW_THRESHOLD:
+        # 疎なコンテンツ: 大きめのチャンク
+        adjusted_size = int(base_size * DENSITY_LOW_MULTIPLIER)
+    elif density_score > DENSITY_HIGH_THRESHOLD:
+        # 密なコンテンツ: 小さめのチャンク
+        adjusted_size = int(base_size * DENSITY_HIGH_MULTIPLIER)
+    else:
+        # 通常の密度: 基本サイズを使用
+        adjusted_size = base_size
+
+    # 範囲内に制限
+    return max(CHUNK_SIZE_MIN, min(adjusted_size, CHUNK_SIZE_MAX))
+
+
+def find_semantic_boundary(
+    text: str,
+    target_pos: int,
+    search_range: int = 100
+) -> int:
+    """目標位置付近で最適なセマンティック境界を検出
+
+    優先順位:
+    1. 段落区切り（\n\n）
+    2. 文末（。.!?）
+    3. 句点（、,）
+    4. 空白
+
+    Args:
+        text: 検索対象テキスト
+        target_pos: 目標位置
+        search_range: 前後の検索範囲（文字数）
+
+    Returns:
+        最適な境界位置
+    """
+    from constants import PARAGRAPH_BOUNDARY_WEIGHT, SENTENCE_BOUNDARY_WEIGHT
+
+    if target_pos >= len(text):
+        return len(text)
+
+    start = max(0, target_pos - search_range)
+    end = min(len(text), target_pos + search_range)
+
+    best_pos = target_pos
+    best_score = 0.0
+
+    for i in range(start, end):
+        score = 0.0
+        distance = abs(i - target_pos)
+        distance_penalty = 1.0 - (distance / search_range)
+
+        # 境界の種類をチェック
+        if i > 0 and i < len(text):
+            # 段落区切り
+            if text[i-1:i+1] == '\n\n':
+                score = PARAGRAPH_BOUNDARY_WEIGHT
+            # 文末
+            elif text[i] in '。.!?':
+                score = SENTENCE_BOUNDARY_WEIGHT
+            # 句点
+            elif text[i] in '、,;':
+                score = 1.0
+            # 空白
+            elif text[i] in ' \n\t':
+                score = 0.5
+
+        # 距離ペナルティを適用
+        final_score = score * distance_penalty
+
+        if final_score > best_score:
+            best_score = final_score
+            best_pos = i + 1 if score > 0 else i
+
+    return best_pos
 
 
 def normalize_score(score: float, min_score: float, max_score: float) -> float:
@@ -552,5 +745,315 @@ def pdf_to_sections(pdf_path: str) -> List[Dict]:
                 'page_end': page_end,
                 'updated_at': datetime.fromtimestamp(os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0).isoformat()
             })
-    
+
+    return sections
+
+
+# ==================== OCR処理関数 ====================
+
+def ocr_extract_text_from_pdf(
+    pdf_path: str,
+    method: str = "tesseract",
+    language: str = "jpn",
+    progress_callback: callable = None
+) -> List[Tuple[int, str]]:
+    """PDFから画像を抽出してOCR処理を実行
+
+    Args:
+        pdf_path: PDFファイルのパス
+        method: OCR手法（'tesseract' or 'azure'）
+        language: OCR言語（'jpn', 'eng'）
+        progress_callback: 進捗コールバック（page_no, total_pages）
+
+    Returns:
+        [(page_no, extracted_text), ...] のリスト（page_noは1始まり）
+
+    Raises:
+        ImportError: 必要なライブラリがインストールされていない
+        ValueError: Azure APIキーが設定されていない
+        Exception: OCR処理エラー
+    """
+    try:
+        from pdf2image import convert_from_path
+    except ImportError:
+        raise ImportError(
+            "pdf2imageがインストールされていません。\n"
+            "インストール方法:\n"
+            "  pip install pdf2image\n"
+            "  また、popplerのインストールも必要です:\n"
+            "    Ubuntu/Debian: sudo apt install poppler-utils\n"
+            "    macOS: brew install poppler\n"
+            "    Windows: https://github.com/oschwartz10612/poppler-windows/releases/"
+        )
+
+    # PDFをページ画像に変換
+    try:
+        images = convert_from_path(pdf_path)
+    except Exception as e:
+        raise Exception(f"PDF画像変換エラー: {e}")
+
+    pages_text = []
+    total_pages = len(images)
+
+    for i, image in enumerate(images, 1):
+        if progress_callback:
+            progress_callback(i, total_pages)
+
+        if method == "tesseract":
+            text = _ocr_with_tesseract(image, language)
+        elif method == "azure":
+            text = _ocr_with_azure(image)
+        else:
+            raise ValueError(f"Unknown OCR method: {method}")
+
+        pages_text.append((i, text))
+
+    return pages_text
+
+
+def _ocr_with_tesseract(image, language: str = "jpn") -> str:
+    """Tesseract OCRでテキスト抽出
+
+    Args:
+        image: PIL Image オブジェクト
+        language: OCR言語（'jpn', 'eng'）
+
+    Returns:
+        抽出されたテキスト
+    """
+    try:
+        import pytesseract
+    except ImportError:
+        raise ImportError(
+            "pytesseractがインストールされていません。\n"
+            "インストール方法:\n"
+            "  pip install pytesseract\n"
+            "  また、Tesseract OCRのインストールも必要です:\n"
+            "    Ubuntu/Debian: sudo apt install tesseract-ocr tesseract-ocr-jpn\n"
+            "    macOS: brew install tesseract tesseract-lang\n"
+            "    Windows: https://github.com/UB-Mannheim/tesseract/wiki"
+        )
+
+    try:
+        text = pytesseract.image_to_string(image, lang=language)
+        return text.strip()
+    except Exception as e:
+        raise Exception(f"Tesseract OCRエラー: {e}")
+
+
+def _ocr_with_azure(image, endpoint: str = None, api_key: str = None) -> str:
+    """Azure Document Intelligenceでテキスト抽出
+
+    Args:
+        image: PIL Image オブジェクト
+        endpoint: Azure endpoint（環境変数から取得可能）
+        api_key: Azure APIキー（環境変数から取得可能）
+
+    Returns:
+        抽出されたテキスト
+    """
+    import io
+
+    try:
+        from azure.ai.formrecognizer import DocumentAnalysisClient
+        from azure.core.credentials import AzureKeyCredential
+    except ImportError:
+        raise ImportError(
+            "azure-ai-formrecognizerがインストールされていません。\n"
+            "インストール方法: pip install azure-ai-formrecognizer"
+        )
+
+    # 環境変数から取得
+    endpoint = endpoint or os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT")
+    api_key = api_key or os.getenv("AZURE_DOCUMENT_INTELLIGENCE_KEY")
+
+    if not endpoint or not api_key:
+        raise ValueError(
+            "Azure Document IntelligenceのエンドポイントとAPIキーが設定されていません。\n"
+            ".envファイルに以下を追加してください:\n"
+            "  AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/\n"
+            "  AZURE_DOCUMENT_INTELLIGENCE_KEY=your_api_key_here"
+        )
+
+    # Azure APIクライアント
+    client = DocumentAnalysisClient(endpoint, AzureKeyCredential(api_key))
+
+    # PIL ImageをBytesIOに変換
+    img_bytes = io.BytesIO()
+    image.save(img_bytes, format='PNG')
+    img_bytes.seek(0)
+
+    # OCR実行
+    try:
+        poller = client.begin_analyze_document("prebuilt-read", img_bytes)
+        result = poller.result()
+
+        # テキスト抽出
+        lines = []
+        for page in result.pages:
+            for line in page.lines:
+                lines.append(line.content)
+
+        return '\n'.join(lines)
+    except Exception as e:
+        raise Exception(f"Azure Document Intelligence OCRエラー: {e}")
+
+
+def pdf_to_sections_with_ocr(
+    pdf_path: str,
+    ocr_enabled: bool = True,
+    ocr_method: str = "tesseract",
+    ocr_language: str = "jpn",
+    progress_callback: callable = None
+) -> List[Dict]:
+    """PDFを見出し推定→セクション化（OCR対応版）
+
+    Args:
+        pdf_path: PDFファイルのパス
+        ocr_enabled: OCR処理を有効化
+        ocr_method: OCR手法（'tesseract' or 'azure'）
+        ocr_language: OCR言語
+        progress_callback: 進捗コールバック
+
+    Returns:
+        Documentのリスト（pdf_to_sections()と同じ形式）
+    """
+    from constants import OCR_MIN_TEXT_LENGTH
+
+    # 1. pypdfでテキスト抽出を試みる
+    try:
+        pages = extract_pdf_pages(pdf_path)
+        total_text_length = sum(len(text) for _, text in pages)
+
+        # 2. テキストが極端に少ない場合 → OCR処理
+        if total_text_length < OCR_MIN_TEXT_LENGTH and ocr_enabled:
+            print(f"⚠️ テキスト抽出量が少ない（{total_text_length}文字）ため、OCR処理を実行します...")
+            pages = ocr_extract_text_from_pdf(
+                pdf_path,
+                method=ocr_method,
+                language=ocr_language,
+                progress_callback=progress_callback
+            )
+    except Exception as e:
+        if ocr_enabled:
+            # pypdf失敗 → OCR処理にフォールバック
+            print(f"⚠️ pypdfでのテキスト抽出失敗（{e}）。OCR処理を実行します...")
+            pages = ocr_extract_text_from_pdf(
+                pdf_path,
+                method=ocr_method,
+                language=ocr_language,
+                progress_callback=progress_callback
+            )
+        else:
+            raise e
+
+    # 3. 既存の見出し推定→セクション化ロジック
+    if not pages:
+        return []
+
+    total_text_length = sum(len(text) for _, text in pages)
+    if total_text_length == 0:
+        raise ValueError("このPDFはテキスト抽出できませんでした（スキャンPDFの可能性）")
+
+    # normalize_pdf_text, remove_repeated_lines等を使用
+    normalized_pages = [(p, normalize_pdf_text(t)) for p, t in pages]
+
+    if total_text_length < 100:
+        # 短いPDFは見出し抽出をせず、ページ単位でセクション化
+        sections = []
+        for page_no, text in normalized_pages:
+            if text.strip():
+                sections.append({
+                    'file_path': pdf_path,
+                    'content': text.strip(),
+                    'heading': f"PAGE {page_no}",
+                    'page_start': page_no,
+                    'page_end': page_no,
+                    'updated_at': datetime.fromtimestamp(os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0).isoformat()
+                })
+        return sections
+
+    cleaned_pages = remove_repeated_lines(normalized_pages)
+
+    # 既存のpdf_to_sections()ロジックと同じ
+    all_lines = []
+    line_to_page = {}
+
+    for page_no, text in cleaned_pages:
+        lines = text.split('\n')
+        for line in lines:
+            line_stripped = line.strip()
+            if line_stripped:
+                all_lines.append(line_stripped)
+                line_to_page[len(all_lines) - 1] = page_no
+
+    if not all_lines:
+        sections = []
+        for page_no, text in cleaned_pages:
+            if text.strip():
+                sections.append({
+                    'file_path': pdf_path,
+                    'content': text.strip(),
+                    'heading': f"PAGE {page_no}",
+                    'page_start': page_no,
+                    'page_end': page_no,
+                    'updated_at': datetime.fromtimestamp(os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0).isoformat()
+                })
+        return sections
+
+    # 見出し候補をスコアリング
+    heading_scores = []
+    for i, line in enumerate(all_lines):
+        score = score_heading_line(line)
+        heading_scores.append((i, line, score))
+
+    from constants import HEADING_SCORE_THRESHOLD, HEADING_SCORE_THRESHOLD_STRICT
+
+    high_score_count = sum(1 for _, _, score in heading_scores if score >= HEADING_SCORE_THRESHOLD)
+    threshold = HEADING_SCORE_THRESHOLD_STRICT if high_score_count > len(all_lines) * 0.3 else HEADING_SCORE_THRESHOLD
+
+    headings = [
+        (i, line) for i, line, score in heading_scores
+        if score >= threshold
+    ]
+
+    if len(headings) < 2:
+        sections = []
+        for page_no, text in cleaned_pages:
+            if text.strip():
+                sections.append({
+                    'file_path': pdf_path,
+                    'content': text.strip(),
+                    'heading': f"PAGE {page_no}",
+                    'page_start': page_no,
+                    'page_end': page_no,
+                    'updated_at': datetime.fromtimestamp(os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0).isoformat()
+                })
+        return sections
+
+    sections = []
+    for idx, (heading_idx, heading_text) in enumerate(headings):
+        start_line_idx = heading_idx
+
+        if idx + 1 < len(headings):
+            end_line_idx = headings[idx + 1][0]
+        else:
+            end_line_idx = len(all_lines)
+
+        section_lines = all_lines[start_line_idx:end_line_idx]
+        section_content = '\n'.join(section_lines[1:]) if len(section_lines) > 1 else '\n'.join(section_lines)
+
+        page_start = line_to_page.get(start_line_idx, 1)
+        page_end = line_to_page.get(end_line_idx - 1, page_start)
+
+        if section_content.strip():
+            sections.append({
+                'file_path': pdf_path,
+                'content': section_content.strip(),
+                'heading': heading_text,
+                'page_start': page_start,
+                'page_end': page_end,
+                'updated_at': datetime.fromtimestamp(os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0).isoformat()
+            })
+
     return sections
