@@ -14,7 +14,7 @@ from constants import (
     DEFAULT_EMBEDDING_MODEL, CHROMA_DB_PATH,
     DEFAULT_BM25_WEIGHT, DEFAULT_VECTOR_WEIGHT, DEFAULT_K
 )
-from utils import chunk_by_headings, pdf_to_sections, pdf_to_sections_with_ocr
+from utils import chunk_by_headings, pdf_to_sections, pdf_to_sections_with_ocr, chunk_text_adaptive
 from retriever import create_hybrid_retriever
 from error_handler import DataFolderEmptyError, PDFReadError, display_error_summary
 
@@ -155,7 +155,7 @@ def process_documents(
         if 'page_start' in doc and 'page_end' in doc:
             # セクション内でチャンキング（適応的チャンキングパラメータを渡す）
             section_text = doc['content']
-            section_chunks = _chunk_text(
+            section_chunks = chunk_text_adaptive(
                 section_text,
                 base_chunk_size,
                 overlap,
@@ -189,35 +189,6 @@ def process_documents(
             all_chunks.extend(chunks)
 
     return all_chunks
-
-
-def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
-    """テキストを指定サイズでチャンキング（utils.pyから移植）"""
-    if len(text) <= chunk_size:
-        return [text]
-    
-    chunks = []
-    start = 0
-    
-    while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end]
-        
-        # オーバーラップ処理
-        if end < len(text) and overlap > 0:
-            next_start = end - overlap
-            for i in range(next_start, end):
-                if text[i] in ['。', '\n', '.', '!', '?']:
-                    next_start = i + 1
-                    break
-        
-        chunks.append(chunk)
-        start = end - overlap if overlap > 0 else end
-        
-        if start >= len(text):
-            break
-    
-    return chunks
 
 
 def _ensure_chroma_db_path(db_path: str) -> None:

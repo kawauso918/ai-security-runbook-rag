@@ -85,7 +85,13 @@ def chunk_by_headings(
         section_text = '\n'.join(section_lines)
 
         # セクション内でチャンキング（適応的チャンキングパラメータを渡す）
-        section_chunks = _chunk_text(section_text, chunk_size, overlap, adaptive=adaptive, doc_type=doc_type)
+        section_chunks = chunk_text_adaptive(
+            section_text,
+            chunk_size,
+            overlap,
+            adaptive=adaptive,
+            doc_type=doc_type
+        )
 
         for j, chunk_text in enumerate(section_chunks):
             chunk_id = f"{file_path}_{len(chunks)}"
@@ -164,6 +170,29 @@ def _chunk_text(
             break
 
     return chunks
+
+
+def chunk_text_adaptive(
+    text: str,
+    chunk_size: int,
+    overlap: int,
+    adaptive: bool = True,
+    doc_type: str = 'text'
+) -> List[str]:
+    """_chunk_textの後方互換ラッパー（adaptive非対応でも動作させる）"""
+    try:
+        return _chunk_text(
+            text,
+            chunk_size,
+            overlap,
+            adaptive=adaptive,
+            doc_type=doc_type
+        )
+    except TypeError as exc:
+        message = str(exc)
+        if "unexpected keyword argument" in message:
+            return _chunk_text(text, chunk_size, overlap)
+        raise
 
 
 def analyze_content_density(text: str) -> float:
