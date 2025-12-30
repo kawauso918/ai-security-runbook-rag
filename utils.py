@@ -179,20 +179,25 @@ def chunk_text_adaptive(
     adaptive: bool = True,
     doc_type: str = 'text'
 ) -> List[str]:
-    """_chunk_textの後方互換ラッパー（adaptive非対応でも動作させる）"""
-    try:
-        return _chunk_text(
-            text,
-            chunk_size,
-            overlap,
-            adaptive=adaptive,
-            doc_type=doc_type
-        )
-    except TypeError as exc:
-        message = str(exc)
-        if "unexpected keyword argument" in message:
-            return _chunk_text(text, chunk_size, overlap)
-        raise
+    """適応的チャンキングを行うテキスト分割関数
+
+    Args:
+        text: チャンキング対象テキスト
+        chunk_size: 基本チャンクサイズ
+        overlap: オーバーラップサイズ
+        adaptive: 適応的チャンキングを有効化（デフォルト: True）
+        doc_type: ドキュメントタイプ（'pdf', 'markdown', 'text'）
+
+    Returns:
+        チャンクのリスト
+    """
+    return _chunk_text(
+        text,
+        chunk_size,
+        overlap,
+        adaptive=adaptive,
+        doc_type=doc_type
+    )
 
 
 def analyze_content_density(text: str) -> float:
